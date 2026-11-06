@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.flixescola.ruta",
+      "sha256_cert_fingerprints": ["05:96:4C:E4:A5:BE:60:2D:87:93:84:29:2B:A2:FC:77:47:BB:EA:50:3A:04:E4:FE:69:81:6B:8E:4D:0C:B9:F0"]
+    }
+  }
+]
