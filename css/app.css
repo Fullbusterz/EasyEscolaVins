@@ -214,6 +214,8 @@ label.field > span { font-size: 13px; color: var(--muted); font-weight: 500; }
   background: var(--surface-2); border: 1px solid var(--line-soft); outline: none; font-size: 16px;
 }
 textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; font-size: 15px; }
+textarea.input.bridge-field { min-height: 86px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45; word-break: break-all; }
+.key-help code { font-size: 12.5px; }
 .input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(201, 165, 76, 0.15); }
 .input-row { display: flex; gap: 8px; }
 .input-row .input { flex: 1; min-width: 0; }

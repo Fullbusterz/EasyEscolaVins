@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHorario, parsePortal, cleanOrderText, BRIDGE_URL, readPortalHash } from '../js/portal.js';
+import { parseHorario, parsePortal, cleanOrderText, bridgeUrl, readPortalHash } from '../js/portal.js';
 
 test('la ruta del #portal solo vale si trae el código que la web dio a la APK', () => {
   const n = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -118,17 +118,46 @@ test('ruta del portal: avisa si ese día cierra y descarta lo que no es una ruta
   assert.equal(parsePortal('{"ruta":"escola-portal","fecha":"04/11/2026","paradas":[["x"]'), null);
 });
 
+const APP = 'https://flix-escola-vins-i-destil-lats.github.io/';
+const NONCE = '2f1c7a84-3b55-4d1e-9a07-6e8b0c5d4f21';
+
 test('el marcador es un enlace javascript: que solo lee del portal', () => {
-  assert.ok(BRIDGE_URL.startsWith('javascript:'));
-  const code = decodeURIComponent(BRIDGE_URL.slice('javascript:'.length));
-  assert.match(code, /^\(function bridge\(\)/);
-  assert.doesNotThrow(() => new Function(code));
-  const urls = [...code.matchAll(/'(\/[A-Za-z]+\/[A-Za-z]+)'/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(urls)].sort(), ['/Repartos/PuntosEntregaDatos', '/Repartos/RepartosDatos']);
-  // Edge para Android corta la dirección de un favorito hacia los 5.000 caracteres (y los espacios
-  // pueden acabar como %20): hay que dejar margen.
-  assert.ok(BRIDGE_URL.length + (BRIDGE_URL.match(/ /g) || []).length * 2 < 4200, `marcador de ${BRIDGE_URL.length} caracteres`);
-  assert.doesNotMatch(BRIDGE_URL, /[\n#]/);
+  for (const url of [bridgeUrl(), bridgeUrl({ app: APP }), bridgeUrl({ app: APP, nonce: NONCE })]) {
+    assert.ok(url.startsWith('javascript:'));
+    const code = decodeURIComponent(url.slice('javascript:'.length));
+    assert.match(code, /^\(function bridge\(app, n\)/);
+    assert.doesNotThrow(() => new Function(code));
+    const urls = [...code.matchAll(/'(\/[A-Za-z]+\/[A-Za-z]+)'/g)].map((m) => m[1]);
+    assert.deepEqual([...new Set(urls)].sort(), ['/Repartos/PuntosEntregaDatos', '/Repartos/RepartosDatos']);
+    // Edge para Android corta la dirección de un favorito hacia los 5.000 caracteres (y los espacios
+    // pueden acabar como %20): hay que dejar margen.
+    assert.ok(url.length + (url.match(/ /g) || []).length * 2 < 4200, `marcador de ${url.length} caracteres`);
+    assert.doesNotMatch(url, /[\n#]/);
+  }
+});
+
+test('el marcador vuelve a la app con el código, y solo con valores que fabrica la app', () => {
+  // Sin dirección no hay salto: se comparte o se copia, como en el ordenador.
+  assert.match(bridgeUrl(), /\}\)\(\)$/);
+  assert.match(bridgeUrl({ app: APP }), /\}\)\('https:[^']+'\)$/);
+  assert.ok(bridgeUrl({ app: APP, nonce: NONCE }).endsWith(`('${APP}','${NONCE}')`));
+  // Un código sin dirección a la que volver no se cuela, y nada que no case con su forma entra dentro.
+  assert.match(bridgeUrl({ nonce: NONCE }), /\}\)\(\)$/);
+  assert.match(bridgeUrl({ app: "https://x/'+alert(1)+'", nonce: NONCE }), /\}\)\(\)$/);
+  assert.match(bridgeUrl({ app: APP, nonce: "'+alert(1)+'" }), /\}\)\('https:[^']+'\)$/);
+  assert.match(bridgeUrl({ app: 'http://portal.escoladist.com/', nonce: NONCE }), /\}\)\(\)$/);
+  // En pruebas la app corre en https://localhost:<puerto>: eso sí vale.
+  assert.ok(bridgeUrl({ app: 'https://localhost:8443/', nonce: NONCE }).endsWith(`('https://localhost:8443/','${NONCE}')`));
+});
+
+test('la ruta que vuelve del marcador la da por verificada readPortalHash', () => {
+  const json = JSON.stringify({ ruta: 'escola-portal', v: 1, fecha: '07/11/2026', id: 1, paradas: [] });
+  const hash = `#portal=${encodeURIComponent(json)}&n=${NONCE}`;
+  assert.equal(readPortalHash(hash, NONCE).verified, true);
+  assert.equal(readPortalHash(hash, NONCE).text, json);
+  // El mismo enlace en otro móvil (otro código) entra con aviso.
+  assert.equal(readPortalHash(hash, '9a1b2c3d-0000-4444-8888-aabbccddeeff').verified, false);
+  assert.equal(readPortalHash(`#portal=${encodeURIComponent(json)}`, NONCE).verified, false);
 });
 
 test('el horario del pedido no se ensancha con un «MAÑANA» de las observaciones', () => {

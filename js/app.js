@@ -6,10 +6,10 @@ import { bigOrder } from './portal.js';
 import { oddHours, ODD_WINDOWS } from './hours.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
-import { parsePortal, readPortalHash } from './portal.js';
+import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.14.0';
+export const VERSION = '1.15.0';
 
 // ---------- Utilidades ----------
 
@@ -45,6 +45,12 @@ const I = {
 // Àrea DUM (carga y descarga): hay que validar cada parada en la app SPRO; máximo 30 minutos.
 const DUM_MINUTES = 30;
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+const isAndroid = /Android/i.test(navigator.userAgent);
+// Instalada en la pantalla de inicio. En iPhone eso aísla sus datos de Safari y nada de fuera puede
+// entrarle: el marcador no puede devolverle la ruta, así que ahí toca copiar y pegar.
+const isStandalone = (() => {
+  try { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch { return false; }
+})();
 function sproUrl() {
   if (isIOS) return 'https://apps.apple.com/app/id1500407078';
   const store = encodeURIComponent('https://play.google.com/store/apps/details?id=cat.bcn.bsm.spro');
@@ -316,11 +322,14 @@ function firstSteps() {
       ${step(false, 2, 'Practica una ruta',
         `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Empezar ruta», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
-      ${step(false, 3, portalApp() ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
+      ${step(false, 3, portalApp() || !isAndroid ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
         ? `<div class="small muted">Toca «Traer la ruta del portal», entra con tu usuario del portal (solo la primera vez) y pulsa el botón dorado. Ahí mismo puedes pedir que te avise cuando salga la ruta de mañana.</div>`
-        : isIOS
-          // En iPhone no se puede compartir a una web instalada: siempre copiar y pegar.
-          ? `<div class="small muted">Desde el portal o un mensaje: copia la lista y usa «Pegar lista». Con el albarán en papel: haz una foto, mantén el dedo sobre el texto, «Seleccionar todo» → «Copiar», y pégalo en «Pegar lista».</div>`
+        : !isAndroid
+          // Sin APK: el marcador de Ajustes la trae del portal con tu usuario. En iPhone instalado no puede
+          // volver sola (iOS no deja entrar nada en una web instalada), así que ahí se copia y se pega.
+          ? `<div class="small muted">En Ajustes, <b>«Traer la ruta del portal»</b>: guardas el marcador una vez y luego la traes con tu usuario del portal.${isIOS && isStandalone ? ' Desde el icono de la pantalla de inicio habrá que pegarla; en Safari entra sola.' : ''}
+               También puedes copiar la lista y usar «Pegar lista».</div>
+             <button class="btn ghost block" data-action="tab" data-tab="settings" style="margin-top:10px">Ver cómo traerla del portal</button>`
           : `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
     </ol>
   </div>`;
@@ -624,6 +633,51 @@ function renderClients() {
   return html;
 }
 
+// Traer la ruta del portal sin la APK: el marcador que se guarda como favorito del navegador.
+// Corre dentro del portal, con la sesión del repartidor, así que cada uno saca la suya.
+function renderBridge() {
+  if (portalApp()) return ''; // con la APK ya se trae de un toque
+  if (isAndroid) {
+    return `
+  <h2 class="section-title">Traer la ruta del portal</h2>
+  <div class="card">
+    <div class="small muted">Para traerla de un toque hace falta la APK: Chrome y Edge de Android no ejecutan los marcadores.
+      Mientras tanto, copia la lista en el portal y usa <b>«Pegar lista»</b>, o compártela a Ruta.</div>
+  </div>`;
+  }
+  const aviso = isIOS && isStandalone
+    ? `<div class="notice warn" style="margin-top:0">${I.warn}<div>Estás usando el icono de la pantalla de inicio. En iPhone nada puede entrar en una app instalada,
+         así que desde aquí la ruta habrá que pegarla a mano. Para que entre sola, abre Ruta <b>en Safari</b> y guarda ahí el marcador.</div></div>`
+    : '';
+  const instalar = isIOS
+    ? `<ol><li>En <b>Safari</b>, con cualquier página abierta: Compartir → <b>Añadir marcador</b> → Guardar. Ponle de nombre <b>Pasar a Ruta</b>.</li>
+         <li>Abre los marcadores (el icono del libro) → <b>Editar</b> → toca <b>Pasar a Ruta</b>.</li>
+         <li>Borra la dirección que tiene y pega ahí el marcador (tiene que empezar por <code>javascript:</code>).</li></ol>`
+    : `<ol><li>Enseña la barra de marcadores del navegador.</li>
+         <li>Crea un marcador nuevo y llámalo <b>Pasar a Ruta</b>.</li>
+         <li>Pega el marcador en su dirección (tiene que empezar por <code>javascript:</code>).</li></ol>`;
+  const usar = isIOS
+    ? `<ol><li>En Safari, entra en <b>portal.escoladist.com</b> con tu usuario (solo la primera vez).</li>
+         <li>Marcadores → <b>Pasar a Ruta</b>.</li>
+         <li>Toca tu ruta: se abre Ruta con las paradas dentro.</li></ol>`
+    : `<ol><li>Entra en <b>portal.escoladist.com</b> con tu usuario.</li>
+         <li>Pulsa el marcador <b>Pasar a Ruta</b>.</li>
+         <li>Elige tu ruta: se abre Ruta con las paradas dentro.</li></ol>`;
+  return `
+  <h2 class="section-title">Traer la ruta del portal</h2>
+  <div class="card">
+    ${aviso}
+    <div class="small muted">Guarda este marcador en tu navegador. Entras en el portal con <b>tu usuario</b> y, al tocarlo, eliges tu ruta:
+      llega aquí sola, con direcciones, teléfonos, horarios y las cajas de cada pedido. Tu contraseña del portal no sale de Safari.</div>
+    <textarea class="input bridge-field" id="bridge-text" readonly spellcheck="false" aria-label="Marcador para el portal">${esc(bridgeLink())}</textarea>
+    <button class="btn line block" data-action="copy-bridge">Copiar el marcador</button>
+    <div class="key-help" style="margin-top:14px"><b>Instalarlo</b> (una vez):${instalar}
+      <div style="margin-top:10px"><b>Cada día:</b></div>${usar}</div>
+    <div class="tiny faint" style="margin-top:12px">Este marcador lleva un código propio de este móvil, para que la app sepa que la ruta la traes tú
+      y no te la ha mandado alguien por un enlace. Si cambias de móvil o borras los datos, vuelve aquí y cópialo otra vez.</div>
+  </div>`;
+}
+
 function renderSettings() {
   const s = settings();
   return `
@@ -651,6 +705,8 @@ function renderSettings() {
         (<b>My first API key</b>). Si no hay ninguna, pulsa <b>Create Key</b>.</li>
       <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol></div>
   </div>
+
+  ${renderBridge()}
 
   <h2 class="section-title">Jornada</h2>
   <div class="card">
@@ -1368,6 +1424,12 @@ const actions = {
   'reset-depot': () => { store.setSettings({ depot: store.DEFAULT_DEPOT }); closeSheet(); render(); toast('Salida: Comercial Escolà'); },
   export: () => exportClients(),
   'export-config': () => exportConfig(),
+  'copy-bridge': async () => {
+    const el = $('#bridge-text');
+    if (el) { el.focus(); el.setSelectionRange(0, el.value.length); }
+    try { await navigator.clipboard.writeText(bridgeLink()); toast('Marcador copiado ✓'); }
+    catch { toast('Mantén el dedo sobre el texto y elige «Copiar»', 5000); }
+  },
   demo: () => loadDemo(),
   'clear-demo': () => clearDemo(),
   backup: () => backup(),
@@ -1641,13 +1703,25 @@ setInterval(() => {
 // que la ruta viene de ella y no de un enlace que alguien te ha mandado.
 const NONCE_KEY = 'ruta-portal-n';
 const storedNonce = () => { try { return localStorage.getItem(NONCE_KEY) || ''; } catch { return ''; } };
-function portalIntent() {
+// El código de este móvil, creándolo la primera vez. Lo llevan tanto la APK como el marcador de Safari:
+// así se distingue la ruta que trae el repartidor de la que alguien le manda por un enlace.
+function portalNonce() {
   let n = storedNonce();
   if (!/^[0-9a-f-]{36}$/i.test(n)) {
     n = crypto.randomUUID();
     try { localStorage.setItem(NONCE_KEY, n); } catch { /* sin almacenamiento: la ruta llegará sin verificar */ }
   }
-  return `intent://portal#Intent;scheme=rutaescola;package=com.flixescola.ruta;S.n=${n};end`;
+  return n;
+}
+
+function portalIntent() {
+  return `intent://portal#Intent;scheme=rutaescola;package=com.flixescola.ruta;S.n=${portalNonce()};end`;
+}
+
+// El marcador para Safari (iPhone) y para el navegador del ordenador: lleva la dirección de esta misma
+// web y el código, así que al elegir la ruta vuelve aquí sola y verificada.
+function bridgeLink() {
+  return bridgeUrl({ app: location.origin + location.pathname.replace(/[^/]*$/, ''), nonce: portalNonce() });
 }
 
 function portalApp() {

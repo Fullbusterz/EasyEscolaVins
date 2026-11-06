@@ -4,7 +4,7 @@ App web para el móvil (se instala como una app normal) que ordena la ruta de re
 
 ## Cómo se usa
 
-1. **El día antes** (la ruta sale en el portal sobre las 17:30): con la APK 1.3.0, **Traer la ruta del portal** la trae con direcciones, teléfonos y horarios (y puede avisarte cuando salga). Si no, pega la lista o añade las paradas a mano. Luego, **Optimizar ruta**.
+1. **El día antes** (la ruta sale en el portal sobre las 17:30): con la APK 1.3.0, **Traer la ruta del portal** la trae con direcciones, teléfonos y horarios (y puede avisarte cuando salga). Sin APK (iPhone, ordenador), el **marcador** de Ajustes hace lo mismo desde el navegador. Si no, pega la lista o añade las paradas a mano. Luego, **Optimizar ruta**.
 2. **Recalcular**, cuando quieras (antes de salir o en plena ruta): vuelve a calcular el orden con el tráfico de ese momento.
 3. **Empezar ruta** el día del reparto y **Waze** te lleva a la primera parada. Al terminar cada parada pulsa **Siguiente** (la entrega se registra en la tablet; si te equivocas, **Deshacer**): recalcula desde donde estás y te da la siguiente.
 
@@ -12,7 +12,9 @@ Cada cliente queda guardado con su dirección, su horario de entrega, sus notas 
 **Horarios de los clientes, con margen:** la ruta se ordena para llegar dentro del horario de cada cliente, pero con margen, porque los horarios del portal no son exactos: media hora si el local cierra por la mañana y una hora si cierra a mediodía o más tarde (un «hasta las 12» admite llegar a la 13). Antes de la hora de apertura no hay margen. Cuando la ruta usa el margen, la app lo avisa en la parada y en el resumen. Se puede apagar en Ajustes.
 **Horarios raros.** Si el portal da a un cliente un horario solo de tarde (todo después de las 13:00, como «16h a 18h»), casi siempre es un error: la app lo avisa («Horario raro · llama al cliente») y planifica como si aceptara desde las 10:00. Tras llamar, en la ficha se pone el horario de verdad y se marca **Confirmado con el cliente**: a partir de ahí manda ese horario y el del portal ya no lo cambia.
 **Notas de la factura.** De las observaciones de la factura, que son sobre todo para la oficina, la app guarda en la parada solo lo que sirve al conductor: a quién llamar y su teléfono, dónde entregar, devoluciones que recoger, montacargas, almacén… Salen como «Factura: …». Las referencias de pedido, quién lo pidió y el horario (que ya va a la franja) se quedan fuera.
-**Rutas que llegan por un enlace.** La ruta del portal solo se da por buena si llega desde la APK (1.5.0 o posterior): la web le pasa un código al abrir el portal y la APK lo devuelve con la ruta. Lo que llegue por un enlace o compartido (de WhatsApp, del marcador del ordenador o de una APK antigua) se enseña con un aviso y, al añadirlo, no cambia la dirección ni el teléfono de los clientes que ya están guardados.
+**Rutas que llegan por un enlace.** La ruta del portal solo se da por buena si trae el código que esta web guarda en el móvil: lo llevan la APK (1.5.0 o posterior) y el marcador que la app genera en Ajustes. Lo que llegue por un enlace o compartido (de WhatsApp, de un marcador antiguo o de una APK antigua) se enseña con un aviso y, al añadirlo, no cambia la dirección ni el teléfono de los clientes que ya están guardados.
+
+**Sin APK: el marcador (iPhone y ordenador).** En Ajustes, *Traer la ruta del portal* da un favorito `javascript:` con la dirección de la app y el código de ese móvil dentro. Corre en el portal, con la sesión del repartidor —así cada uno saca la suya, y la contraseña no sale del navegador—, lee las mismas dos consultas que la pantalla «Repartos de entrega» y vuelve a la app con `#portal=…&n=…`: un toque, sin copiar ni pegar, y la ruta entra verificada. Safari de iPhone ejecuta los marcadores; Chrome y Edge de Android no, así que en Android sigue haciendo falta la APK. Al cambiar de móvil o borrar los datos hay que copiar el marcador otra vez, porque el código cambia.
 En su ficha se marca también cómo es **con el horario**: *Estricto* (sin margen: se planifica para llegar al menos 10 min antes de que cierre) o *Flexible* (media hora más de margen).
 
 **Pedidos grandes.** Con la APK 1.4.0 la ruta del portal trae la carga de cada pedido: cajas (exactas) y botellas (las sueltas, más las de dentro de las cajas estimadas por su tamaño). Cada parada la enseña, y un **pedido grande** (más de 70 botellas o más de 30 cajas) sale destacado en la lista y en el mapa. Al buscar dónde aparcar un grupo, cada pedido pesa por los viajes de carretilla que supone (8 cajas por viaje), así que la furgoneta queda más cerca del pedido grande.
@@ -33,6 +35,8 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 Tiene que estar publicada en una dirección https, por ejemplo con Netlify Drop o GitHub Pages: se sube la carpeta `app` tal cual. Luego, desde el móvil:
 - **Android (Chrome)**: menú ⋮, "Añadir a pantalla de inicio".
 - **iPhone (Safari)**: botón Compartir, "Añadir a pantalla de inicio".
+
+**En iPhone, icono o Safari.** iOS aísla los datos de una web instalada y no deja que entre nada de fuera, así que desde el icono el marcador no puede devolver la ruta: hay que copiarla y pegarla. Usándola **en Safari** sí vuelve sola, que es lo más parecido a la APK; a cambio, Safari puede borrar los datos tras unos días sin abrirla, así que conviene hacer copia de seguridad. La app detecta en cuál de los dos está y lo explica en Ajustes.
 
 ## Para desarrollo
 

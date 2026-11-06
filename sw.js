@@ -2,7 +2,7 @@
 // Las búsquedas y los cálculos de ruta siempre van a la red.
 // Al publicar cambios hay que subir VERSION (y la de js/app.js): así el móvil descarga el
 // conjunto nuevo completo y avisa con "Hay una versión nueva".
-const VERSION = '1.14.0';
+const VERSION = '1.15.0';
 const CACHE = `ruta-escola-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest',

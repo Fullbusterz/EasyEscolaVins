@@ -250,10 +250,14 @@ export function parsePortal(text) {
 
 // ---------- El marcador ----------
 
-// Se ejecuta dentro del portal (no en la app): no puede usar nada de fuera de la función.
-// Solo lee: las mismas dos consultas que hace la pantalla «Repartos de entrega» del portal.
+// Se ejecuta dentro del portal (no en la app): no puede usar nada de fuera de la función, solo sus
+// dos argumentos. Solo lee: las mismas dos consultas que hace la pantalla «Repartos de entrega».
 // Corto a propósito: Edge para Android corta la dirección de un favorito hacia los 5.000 caracteres.
-function bridge() {
+//
+// `app` es la dirección de esta web y `n` el código que solo conoce este móvil. Con los dos, al elegir
+// una ruta el marcador salta a la app con «#portal=…&n=…» y la ruta entra verificada, igual que con la
+// APK: sin copiar ni pegar. Sin ellos (marcador genérico) se comparte o se copia, como antes.
+function bridge(app, n) {
   const q = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => '&#' + c.charCodeAt(0) + ';');
   let box = document.getElementById('ruta-puente');
   if (box) box.remove();
@@ -278,10 +282,13 @@ function bridge() {
       routes.push([e.fecha, new Set(pts.map((p) => p.id_cliente)).size, JSON.stringify({ ruta: 'escola-portal', v: 1, fecha: e.fecha, id: e.id_entrega,
         paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden, p.botellas, p.cajas_2, p.cajas_3a5, p.cajas_6a11, p.cajas_12mas]) })]);
     }
-    say(routes.map((r, i) => '<button data-i=' + i + ' style="display:block;width:100%;margin:8px 0;padding:14px;border:0;border-radius:12px;background:#c9a54c;font-weight:700">Ruta del ' + q(r[0]) + ' · ' + r[1] + ' paradas</button>').join('') + 'Al compartir, elige <b>Ruta</b>.');
+    say(routes.map((r, i) => '<button data-i=' + i + ' style="display:block;width:100%;margin:8px 0;padding:14px;border:0;border-radius:12px;background:#c9a54c;font-weight:700">Ruta del ' + q(r[0]) + ' · ' + r[1] + ' paradas</button>').join('')
+      + (app ? 'Al tocarla se abre Ruta con la ruta dentro.' : 'Al compartir, elige <b>Ruta</b>.'));
     box.querySelectorAll('[data-i]').forEach((b) => {
       b.onclick = async () => {
         const t = routes[b.dataset.i][2], m = box.querySelector('[data-m]');
+        const to = app && app + '#portal=' + encodeURIComponent(t) + (n ? '&n=' + n : '');
+        if (to && to.length < 60000) { m.textContent = 'Abriendo Ruta…'; location.href = to; return; }
         try { return await navigator.share({ title: 'Ruta', text: t }); } catch (err) { if (err.name === 'AbortError') return; }
         try { await navigator.clipboard.writeText(t); m.innerHTML = 'Copiada. En la app: <b>Pegar lista</b>, pega y <b>Leer lista</b>.'; } catch { m.textContent = 'No he podido compartirla ni copiarla.'; }
       };
@@ -303,6 +310,19 @@ export function readPortalHash(hash, nonce) {
 }
 
 // Sin saltos de línea ni sangría, y codificando solo lo imprescindible para que quepa en un favorito.
-export const BRIDGE_URL = 'javascript:' + `(${bridge.toString()})()`
+const pack = (src) => 'javascript:' + src
   .replace(/\n\s*/g, '')
   .replace(/[%#\s]|[^\x20-\x7e]/g, (c) => (c === ' ' ? c : encodeURIComponent(c)));
+
+// Solo se meten dentro del marcador valores que fabrica esta web: una dirección https nuestra y un UUID.
+const safe = (v, re) => (re.test(String(v || '')) ? `'${v}'` : '');
+
+/**
+ * El marcador para guardar como favorito.
+ * Con `app` (la dirección de esta web) y `nonce`, la ruta vuelve sola y verificada; sin ellos, se comparte.
+ */
+export function bridgeUrl({ app = '', nonce = '' } = {}) {
+  const a = safe(app, /^https:\/\/[\w.-]+(:\d+)?(\/[\w./-]*)?$/);
+  const n = a && safe(nonce, /^[0-9a-f-]{36}$/i); // sin dirección a la que volver, el código no pinta nada
+  return pack(`(${bridge.toString()})(${[a, n].filter(Boolean).join(',')})`);
+}
