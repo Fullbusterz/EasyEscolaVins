@@ -81,7 +81,13 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     back,
     start: startMin,
     returnTo: returnToDepot,
-    stops: stops.map((s, i) => ({ windows: s.windows || [], service: (s.service ?? 10) + wp[i].extra })),
+    // El cliente tiene que poder recibir el pedido entero antes de cerrar, no solo verte llegar: una descarga de
+    // 25 cajas que empieza 4 minutos antes de la hora de cierre acaba media hora después de que hayan cerrado.
+    // Por eso se planifica con la ventana recortada por lo que dura la descarga (ver fitService).
+    stops: stops.map((s, i) => {
+      const service = (s.service ?? 10) + wp[i].extra;
+      return { windows: fitService(s.windows || [], service), service };
+    }),
   };
   let fixed = null;
   if (Array.isArray(fixedOrder)) {
@@ -142,6 +148,15 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     startMin,
     pairs: next,
   };
+}
+
+// Ventanas recortadas por lo que se tarda en descargar: hay que llegar con tiempo de acabar antes de que cierren.
+// Si la descarga no cabe entera en la franja, se deja un hueco mínimo para no declararla imposible (el
+// optimizador la pondría «tarde» pase lo que pase y dejaría de ordenarla con criterio).
+const MIN_FIT = 10;
+export function fitService(windows, service) {
+  return (windows || []).map(([open, close]) => [open, Math.max(open + MIN_FIT, close - (service || 0))])
+    .filter(([open, close]) => close >= open);
 }
 
 function evaluateOrder(order, ctx) {

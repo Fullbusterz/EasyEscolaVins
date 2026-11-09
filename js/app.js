@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.15.0';
+export const VERSION = '1.16.0';
 
 // ---------- Utilidades ----------
 
@@ -284,11 +284,12 @@ function orderedStops(r) {
 
 function stopCard(s, i, leg, extra = '', park = null) {
   const chips = [loadChip(s), windowsChips(s.windows), oddChip(s), timingChip(s)];
-  // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible).
+  // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible y,
+  // además, descuenta lo que dura la descarga: se puede llegar a tiempo y aun así no acabar antes de cerrar).
   const real = pastHours(s, leg);
   if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
   else if (real > 0.5 && !(leg?.late > 0.5)) chips.push(`<span class="chip wait">${Math.round(real)} min tarde · en el margen</span>`);
-  else if (leg?.late > 0.5) chips.push(`<span class="chip late">${real > 0.5 ? lateText(real) : 'Sin margen · estricto'}</span>`);
+  else if (leg?.late > 0.5) chips.push(`<span class="chip late">${real > 0.5 ? lateText(real) : s.timing === 'strict' ? 'Sin margen · estricto' : 'No acabas de descargar antes de que cierre'}</span>`);
   else if (leg?.wait > 4) chips.push(`<span class="chip wait">Espera ${Math.round(leg.wait)} min</span>`);
   if (park && !s.done) chips.push(leg?.foot ? `<span class="chip park">A pie desde la furgoneta</span>` : `<span class="chip park">${I.pin}Aparca: ${esc(park.label || 'punto medio')}</span>`);
   if (!located(s)) chips.push('<span class="chip late">Sin ubicar</span>');
@@ -395,7 +396,7 @@ function renderPlanning(r) {
     </div>`;
     if (p.late > 0.5) {
       const lateOnes = p.legs.filter((l) => l.late > 0.5).map((l) => r.stops.find((x) => x.id === l.id)?.name).filter(Boolean);
-      html += `<div class="notice warn">${I.warn}<div>Ni con el margen da tiempo a llegar a <b>${esc(lateOnes.join(', '))}</b>. Revisa sus horarios o avisa al cliente.</div></div>`;
+      html += `<div class="notice warn">${I.warn}<div>Ni con el margen da tiempo a entregar en <b>${esc(lateOnes.join(', '))}</b> antes de que cierren (cuenta lo que se tarda en descargar). Revisa sus horarios o avisa al cliente.</div></div>`;
     }
     const inMargin = p.legs.filter((l) => !(l.late > 0.5)).map((l) => {
       const x = r.stops.find((y) => y.id === l.id);
