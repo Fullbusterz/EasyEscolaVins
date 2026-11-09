@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { serviceFor, unloadFrom, extraTrips, TRIP_MIN, DEFAULT_SERVICE } from '../js/service.js';
+import { serviceFor, unloadFrom, extraTrips, measure, TRIP_MIN, DEFAULT_SERVICE } from '../js/service.js';
 import { TROLLEY_BOXES, LOOSE_PER_BOX } from '../js/parking.js';
 
 const stop = (boxes, loose = 0, rest = {}) => ({ load: { boxes, loose, bottles: boxes * 6 + loose }, ...rest });
@@ -43,4 +43,40 @@ test('al aprender se guarda solo la parte fija, no el pedido de ese día', () =>
   for (const s of [stop(1), stop(25), stop(13, 0, { park: 5 }), stop(0, 200, { service: 18 })]) {
     assert.equal(unloadFrom(serviceFor(s), s), s.service ?? DEFAULT_SERVICE);
   }
+});
+
+// ---------- Aprender de lo que ha pasado de verdad ----------
+
+const t = (h, m) => new Date(2026, 10, 9, h, m).getTime();
+
+test('con el toque de «he aparcado» se separa llegar y aparcar de la entrega', () => {
+  // Sales a las 9:00, aparcas a las 9:20 (se preveían 12 min de viaje) y acabas a las 9:35.
+  const r = measure({ leftAt: t(9, 0), parkedAt: t(9, 20), doneAt: t(9, 35), driveEst: 12, stop: stop(1) });
+  assert.equal(r.unload, 15); // lo que has tardado en entregar, medido
+  assert.equal(r.park, 8); // los 20 de llegar menos los 12 previstos de viaje: buscar sitio
+});
+
+test('lo que ya se cuenta aparte no se aprende dos veces', () => {
+  // 40 min en la parada, pero 25 cajas (2 viajes de más = 20 min) y 5 andando desde la furgoneta.
+  const r = measure({ leftAt: t(9, 0), parkedAt: t(9, 10), doneAt: t(9, 50), driveEst: 10, walkEst: 5, stop: stop(25) });
+  assert.equal(r.unload, 15); // 40 − 5 de paseo − 20 de viajes
+  // Y la espera a que abriera el cliente tampoco es tiempo de descarga
+  const esperando = measure({ leftAt: t(9, 0), parkedAt: t(9, 10), doneAt: t(9, 40), driveEst: 10, waitEst: 18, stop: stop(1) });
+  assert.equal(esperando.unload, 12);
+});
+
+test('si no has movido la furgoneta no has aparcado, y no se aprende nada de aparcar', () => {
+  const r = measure({ leftAt: t(9, 0), parkedAt: t(9, 0), doneAt: t(9, 14), walkEst: 2, moved: false, stop: stop(1) });
+  assert.equal(r.unload, 12);
+  assert.equal(r.park, null);
+});
+
+test('las muestras raras se tiran en vez de aprenderlas', () => {
+  // Parada a desayunar entre dos entregas: dos horas de parada no es el tiempo de descarga del cliente.
+  assert.equal(measure({ leftAt: t(9, 0), parkedAt: t(9, 10), doneAt: t(11, 10), stop: stop(1) }).unload, null);
+  // Un viaje que se preveía mucho más largo de lo que ha sido: aparcar saldría negativo
+  assert.equal(measure({ leftAt: t(9, 0), parkedAt: t(9, 5), doneAt: t(9, 20), driveEst: 30, stop: stop(1) }).park, null);
+  // Horas que faltan o que van al revés
+  assert.deepEqual(measure({ leftAt: t(9, 0), doneAt: t(9, 20), stop: stop(1) }), { unload: null, park: null });
+  assert.equal(measure({ leftAt: t(9, 0), parkedAt: t(9, 30), doneAt: t(9, 10), stop: stop(1) }).unload, null);
 });

@@ -65,6 +65,8 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
   // A pie: dentro de un aparcamiento, de la entrega a la furgoneta y de ahí a la siguiente (sin coche);
   // para llegar a él o salir de él, el coche más el paseo entre la furgoneta y la entrega.
   const wp = walkPlan(stops, parking);
+  // Cuántas entregas comparten el aparcamiento de la parada i (1 si va por su cuenta).
+  const groupSize = (i) => (wp[i].group < 0 ? 1 : Math.max(1, wp.filter((w) => w.group === wp[i].group).length));
   const fromG = parkedAt != null && parking[parkedAt] ? parkedAt : -1;
   const fromWalk = fromG >= 0 ? walkMin(from, parking[fromG]) : 0;
   const node = (i) => (i === 0 ? { group: fromG, walk: fromWalk } : i === n + 1 ? { group: -1, walk: 0 } : wp[i - 1]);
@@ -85,7 +87,10 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     // 25 cajas que empieza 4 minutos antes de la hora de cierre acaba media hora después de que hayan cerrado.
     // Por eso se planifica con la ventana recortada por lo que dura la descarga (ver fitService).
     stops: stops.map((s, i) => {
-      const service = (s.service ?? 10) + wp[i].extra;
+      // Aparcar se paga una vez por sitio, no por entrega: si dejas la furgoneta y haces tres entregas
+      // andando desde ahí, son tres descargas y un solo aparcamiento. Se reparte entre las del grupo para
+      // que la suma salga bien sea cual sea el orden en que el optimizador las acabe poniendo.
+      const service = (s.service ?? 12) + (s.park ?? 0) / groupSize(i) + wp[i].extra;
       return { windows: fitService(s.windows || [], service), service };
     }),
   };

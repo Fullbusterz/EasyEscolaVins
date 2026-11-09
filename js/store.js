@@ -59,7 +59,7 @@ function load() {
     // significan otra cosa (el tiempo fijo, sin los viajes), así que se vuelve a aprender desde cero.
     if (data.settings?.serviceV !== 1) {
       Object.assign(settings, { service: 12, park: 0, serviceV: 1 });
-      for (const c of Object.values(clients)) Object.assign(c, { service: 12, serviceLog: [], serviceLearned: false });
+      for (const c of Object.values(clients)) Object.assign(c, { service: 12, serviceLog: [], serviceLearned: false, park: 0, parkLog: [], parkLearned: false });
     }
     return { ...base, ...data, clients, settings };
   } catch {
@@ -152,6 +152,9 @@ export function sanitizeClient(c) {
     windowsConfirmed: !!c.windowsConfirmed,
     serviceLog: Array.isArray(c.serviceLog) ? c.serviceLog.map((m) => int(m, 1, 120, 0)).filter(Boolean).slice(-8) : [],
     serviceLearned: !!c.serviceLearned,
+    // Lo mismo para aparcar: lo medido en las últimas veces y si ya hay bastante para fiarse.
+    parkLog: Array.isArray(c.parkLog) ? c.parkLog.map((m) => int(m, 0, 120, -1)).filter((m) => m >= 0).slice(-8) : [],
+    parkLearned: !!c.parkLearned,
     updatedAt: Math.min(int(c.updatedAt, 0, Number.MAX_SAFE_INTEGER, 0), Date.now()),
   };
 }
@@ -190,6 +193,21 @@ export function learnService(name, minutes) {
     const sorted = [...log].sort((a, b) => a - b);
     patch.service = sorted[Math.floor(sorted.length / 2)];
     patch.serviceLearned = true;
+  }
+  return rememberClient(patch);
+}
+
+// Lo que cuesta aparcar en un cliente, medido. Igual que la descarga: con 3 o más veces, la mediana manda.
+// Se guarda aparte porque son cosas distintas: un local puede despacharse rápido y ser un infierno de aparcar.
+export function learnPark(name, minutes) {
+  const c = findClient(name);
+  if (!c || !(minutes >= 0 && minutes <= 60)) return null;
+  const log = [...(c.parkLog || []), Math.round(minutes)].slice(-8);
+  const patch = { name: c.name, parkLog: log };
+  if (log.length >= 3) {
+    const sorted = [...log].sort((a, b) => a - b);
+    patch.park = sorted[Math.floor(sorted.length / 2)];
+    patch.parkLearned = true;
   }
   return rememberClient(patch);
 }

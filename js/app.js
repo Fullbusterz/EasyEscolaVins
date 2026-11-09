@@ -1,10 +1,10 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
-import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
+import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs, haversineKm } from './geo.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
 import { bigOrder } from './portal.js';
 import { oddHours, ODD_WINDOWS } from './hours.js';
-import { serviceFor, unloadFrom, extraTrips, TRIP_MIN } from './service.js';
+import { serviceFor, stopParts, measure, unloadFrom, extraTrips, TRIP_MIN, MOVED_M } from './service.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
@@ -125,7 +125,10 @@ const pastHours = (x, leg) => (leg && settings().useWindows ? serviceStart(leg.a
 const oddChip = (x) => (odd(x) ? '<span class="chip late">Horario raro · llama al cliente</span>' : '');
 // El tiempo de la parada no es fijo: lo fijo del cliente, más aparcar, más los viajes que salgan por las cajas.
 const stopMinutes = (x) => serviceFor(x, settings());
-const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: stopMinutes(x), load: x.load });
+const planStop = (x) => {
+  const { unload, park, tripsMin } = stopParts(x, settings());
+  return { id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: unload + tripsMin, park, load: x.load };
+};
 // Carga del pedido (cajas y botellas, del portal). Un pedido grande (+70 botellas o +30 cajas) se marca bien
 // visible, y si no cabe en un viaje de carretilla se dice, que es de donde salen los minutos de más.
 function loadChip(x) {
@@ -358,7 +361,7 @@ function loadDemo() {
   if (r.stops.length) { ui.date = t; render(); return toast('Hoy ya tienes paradas: la ruta de ejemplo es para un día vacío'); }
   const base = Math.ceil(nowMin() / 15) * 15;
   r.stops = DEMO.map(([name, address, lat, lon, from, to], i) => ({
-    id: `demo${i}`, demo: true, name, address, label: address, lat, lon, service: 10, done: false,
+    id: `demo${i}`, demo: true, name, address, label: address, lat, lon, service: 12, done: false,
     windows: from == null ? [] : [[Math.min(base + from, 23 * 60), Math.min(base + to, 23 * 60 + 59)]],
     notes: i === 1 ? 'Parada de práctica: prueba aquí el botón SPRO y «Dejar para luego».' : '',
   }));
@@ -372,7 +375,7 @@ function loadDemo() {
 function clearDemo() {
   const r = currentRoute();
   r.stops = r.stops.filter((x) => !x.demo);
-  r.status = 'draft'; r.plan = null; r.current = null; r.lastChange = null; r.dum = null; r.pairs = {};
+  r.status = 'draft'; r.plan = null; r.current = null; r.lastChange = null; r.dum = null; r.vanAt = null; r.pairs = {};
   store.save(); render(); toast('Ruta de ejemplo borrada');
 }
 
@@ -587,9 +590,11 @@ function renderActionBar() {
   const go = park && leg?.foot
     ? `<a class="btn gold big" href="${esc(walkUrl(cur))}" target="_blank" rel="noopener">${I.nav}A pie</a>`
     : `<a class="btn gold big" href="${esc(navUrl(s.nav, park || cur))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>`;
-  return `${go}
-    ${ui.busy ? `<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`
-      : `<button class="btn forest big" data-action="next">${last ? `${I.check}Terminar` : `${I.right}Siguiente`}</button>`}`;
+  if (ui.busy) return `${go}<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`;
+  // Mientras no esté aparcada, el botón grande es «He aparcado»: con esa hora se separa lo que cuesta
+  // llegar y aparcar de lo que cuesta la entrega, y así la app aprende las dos cosas por separado.
+  if (!parked(cur)) return `${go}<button class="btn forest big" data-action="parked">${I.pin}He aparcado</button>`;
+  return `${go}<button class="btn forest big" data-action="next">${last ? `${I.check}Terminar` : `${I.right}Siguiente`}</button>`;
 }
 
 function backupAge() {
@@ -907,6 +912,7 @@ function serviceHint(sh) {
   const mem = d.name && store.findClient(d.name);
   const parts = [];
   if (mem?.serviceLearned && mem.service === d.service) parts.push(`La descarga está aprendida de tus últimas ${mem.serviceLog.length} entregas aquí.`);
+  if (mem?.parkLearned && mem.park === d.park) parts.push(`Lo de aparcar también: ${mem.park} min de mediana en ${mem.parkLog.length} veces.`);
   // Lo que de verdad dura la parada: la descarga, aparcar y los viajes de más que salgan por las cajas.
   // El pedido del día está en la parada de la ruta, no en el borrador de la ficha.
   const load = (sh.id && currentRoute().stops.find((x) => x.id === sh.id)?.load) || null;
@@ -1247,21 +1253,58 @@ async function replanActive(msg) {
   window.scrollTo({ top: 0, behavior: smooth() });
 }
 
-// Apunta cuándo sales hacia la parada actual y cuánto se prevé de viaje y de espera: al entregarla,
-// lo que sobra es lo que has tardado en descargar.
+// Arranca el cronómetro de una parada. `since` es cuando saliste de la anterior; lo previsto se guarda para
+// poder restarlo al aprender. Si la furgoneta ya está aparcada de la entrega anterior (mismo sitio, aún
+// quedan entregas allí), no hay que volver a aparcar: la parada empieza ya en «entregando».
 function markCurrent(r, leg, since) {
   const cur = r.stops.find((x) => x.id === r.current);
   if (!cur || !leg || leg.id !== cur.id) return;
-  cur.trip = { since, drive: leg.drive, wait: leg.wait || 0 };
+  cur.trip = { since, drive: leg.drive, wait: leg.wait || 0, walk: leg.walk || 0 };
+  if (leg.foot) cur.trip.parkedAt = since; // se llega andando: la furgoneta no se ha movido
 }
 
-function learnFrom(cur) {
-  if (!cur.trip) return;
-  const minutes = (Date.now() - cur.trip.since) / 60000 - cur.trip.drive - cur.trip.wait;
-  delete cur.trip;
-  // Se aprende el tiempo fijo del cliente: a lo que ha tardado se le quitan los viajes con la carretilla y
-  // lo de aparcar, que ya se cuentan aparte. Si no, un día de pedido grande le subiría la media para siempre.
+// ¿Está ya aparcada la furgoneta para la parada actual?
+const parked = (cur) => !!cur?.trip?.parkedAt;
+
+// De lo que ha pasado de verdad en una parada, lo que merece la pena aprender.
+// Con el toque de «he aparcado» se sabe dónde se corta: antes es llegar y aparcar, después es la entrega.
+// Sin él (una parada cerrada a mano, o la ruta de antes de esta versión) solo se puede estimar el total.
+function learnFrom(cur, doneAt) {
+  const t = cur.trip;
+  if (!t || !cur.name) return;
+  if (t.parkedAt) {
+    // t.drive es el tramo entero y ya lleva dentro el paseo de la furgoneta al local, que pasa DESPUÉS de
+    // aparcar: para lo que cuesta llegar y aparcar hay que quitárselo, o se restaría dos veces.
+    const { unload, park } = measure({
+      leftAt: t.since, parkedAt: t.parkedAt, doneAt,
+      driveEst: Math.max(0, t.drive - t.walk), waitEst: t.wait, walkEst: t.walk, moved: !!t.moved, stop: cur,
+    });
+    if (unload != null) store.learnService(cur.name, unload);
+    if (park != null) store.learnPark(cur.name, park);
+    return;
+  }
+  const minutes = (doneAt - t.since) / 60000 - t.drive - t.wait;
   store.learnService(cur.name, unloadFrom(minutes, cur, settings()));
+}
+
+// «He aparcado»: se apunta la hora y se mira con el GPS si la furgoneta se ha movido desde la entrega
+// anterior. Si no se ha movido, no has aparcado (vas andando desde el mismo sitio) y no se aprende nada de
+// aparcar por esta parada. El GPS no bloquea: si no llega a tiempo, se da por hecho que sí te has movido.
+async function parkHere() {
+  const r = currentRoute();
+  const cur = r.stops.find((x) => x.id === r.current && !x.done);
+  if (!cur?.trip || cur.trip.parkedAt) return;
+  cur.trip.parkedAt = Date.now();
+  cur.trip.moved = true;
+  store.save();
+  render();
+  const gps = await currentPosition(4000);
+  if (!gps || gps.accuracy > 100) return;
+  const r2 = currentRoute();
+  const c2 = r2.stops.find((x) => x.id === cur.id);
+  if (c2?.trip && r2.vanAt) c2.trip.moved = haversineKm(gps, r2.vanAt) * 1000 > MOVED_M;
+  r2.vanAt = { lat: gps.lat, lon: gps.lon }; // aquí se queda la furgoneta hasta el próximo aparcamiento
+  store.save();
 }
 
 // Marca la parada actual como hecha y pasa a la siguiente, con opción de deshacer.
@@ -1273,7 +1316,7 @@ async function finishCurrent() {
   delete cur.failed;
   const mem = store.findClient(cur.name);
   if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
-  learnFrom(cur);
+  learnFrom(cur, cur.doneAt);
   delete cur.trip;
   // Con un aparcamiento, la validación de SPRO sigue valiendo mientras quede alguna entrega suya.
   const park = parkingOf(r, cur.id);
@@ -1307,7 +1350,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['open-reorder', 'reorder-save', 'order-auto', 'next', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
+const BLOCKED_WHILE_BUSY = new Set(['open-reorder', 'reorder-save', 'order-auto', 'next', 'parked', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1317,6 +1360,7 @@ const actions = {
   recalc: () => (currentRoute().status === 'active' ? replanActive('Recalculada con el tráfico de ahora') : optimize({ recalc: true })),
   'start-route': () => startRoute(),
   next: () => finishCurrent(),
+  parked: () => parkHere(),
   postpone: () => {
     const r = currentRoute();
     if (ui.sheet) closeSheet();
@@ -1460,6 +1504,8 @@ const actions = {
     if (r.current) {
       const park = parkingOf(r, r.current);
       r.dum = { id: r.current, at: Date.now(), group: park ? groupKey(park.ids) : undefined };
+      // Validar en SPRO es haber aparcado: vale como el toque de «he aparcado», sin pedirlo dos veces.
+      if (!parked(r.stops.find((x) => x.id === r.current))) parkHere();
       store.save(); setTimeout(render, 600);
     }
   },
