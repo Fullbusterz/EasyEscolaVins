@@ -18,7 +18,7 @@ test('al abrir la app conserva los datos guardados y sanea lo raro', () => {
   assert.equal(store.findClient('vinos paco').visits, 4);
   assert.deepEqual(store.findClient('vinos paco').windows, [[540, 690]]);
   assert.equal(store.findClient('evil').visits, 0);
-  assert.equal(store.findClient('evil').service, 10);
+  assert.equal(store.findClient('evil').service, 12);
   assert.equal(store.route('2099-01-01').stops.length, 1);
   assert.equal([...mem.keys()].some((k) => k.includes('dañado')), false);
 });

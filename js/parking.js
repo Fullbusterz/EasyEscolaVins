@@ -7,6 +7,8 @@
 import { haversineKm } from './geo.js';
 import { serviceStart } from './solver.js';
 
+const DEFAULT_SERVICE = 12; // igual que en service.js, que importa de aquí y no se puede importar de vuelta
+
 export const BLOCK_M = 133; // una manzana del Eixample (113 m) más la calle
 export const WALK_M_MIN = 70; // a pie con la carretilla, unos 4,2 km/h
 const DETOUR = 1.25; // por las calles se anda algo más que en línea recta
@@ -15,11 +17,12 @@ const REACH_M = 800; // zonas más lejos que esto de alguna entrega no se propon
 const SAME_SPOT_M = 50; // «otro sitio» tiene que estar a más de esto de los ya descartados
 const SNAP_M = 30; // al mover la P a mano, si cae junto a una zona DUM se toma esa zona
 
-export const TROLLEY_BOXES = 8; // cajas por viaje con la carretilla (6 botellas sueltas cuentan como una caja)
+export const TROLLEY_BOXES = 12; // cajas por viaje con la carretilla
+export const LOOSE_PER_BOX = 12; // botellas sueltas que ocupan lo que una caja
 
 export const walkM = (a, b) => haversineKm(a, b) * 1000 * DETOUR;
 // Viajes de la furgoneta al local: un pedido grande son varios, y por eso pesa más al elegir dónde aparcar.
-export const trips = (s) => (s.load ? Math.max(1, Math.ceil((s.load.boxes + s.load.loose / 6) / TROLLEY_BOXES)) : 1);
+export const trips = (s) => (s.load ? Math.max(1, Math.ceil((s.load.boxes + s.load.loose / LOOSE_PER_BOX) / TROLLEY_BOXES)) : 1);
 export const walkMin = (a, b) => walkM(a, b) / WALK_M_MIN;
 export const groupKey = (ids) => [...ids].sort().join('+');
 
@@ -88,7 +91,9 @@ export function parkedTime(members, spot, legs) {
     const { begin, lateBy } = serviceStart(t + walk, s.windows);
     if (lateBy > 0.5 && !(legs.get(s.id)?.late > 0.5)) late.push(s.id);
     if (start == null) start = begin - walk;
-    t = begin + (s.service ?? 10) + walk + 2 * walk * (trips(s) - 1);
+    // s.service ya trae descarga + aparcar + los viajes de más (ver service.js); aquí se suma solo el
+    // paseo hasta la furgoneta, que depende de dónde se aparque y por eso no se puede saber antes.
+    t = begin + (s.service ?? DEFAULT_SERVICE) + walk + 2 * walk * (trips(s) - 1);
   }
   return { minutes: t - start, late };
 }

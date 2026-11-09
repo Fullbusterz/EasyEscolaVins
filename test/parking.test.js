@@ -76,7 +76,9 @@ test('un pedido grande son varios viajes y acerca el aparcamiento a ese local', 
   const { trips } = await import('../js/parking.js');
   assert.equal(trips({}), 1);
   assert.equal(trips({ load: { boxes: 5, loose: 6 } }), 1);
-  assert.equal(trips({ load: { boxes: 24, loose: 52 } }), 5); // (24 + 52/6) / 8 → 5 viajes
+  assert.equal(trips({ load: { boxes: 12, loose: 0 } }), 1); // la carretilla justa
+  assert.equal(trips({ load: { boxes: 12, loose: 12 } }), 2); // 12 sueltas ocupan una caja: ya no cabe
+  assert.equal(trips({ load: { boxes: 24, loose: 52 } }), 3); // (24 + 52/12) / 12 → 3 viajes
   const small = stop('a', 0, 0), big = { ...stop('b', 200, 0), load: { boxes: 30, loose: 0 } };
   const zones = [zone(40, 0, 'Junto a la pequeña'), zone(160, 0, 'Junto a la grande')];
   assert.equal(spotsFor([small, big], zones)[0].label, 'Junto a la grande');
@@ -86,5 +88,5 @@ test('un pedido grande son varios viajes y acerca el aparcamiento a ese local', 
   // El tiempo aparcado cuenta los viajes de más
   const one = parkedTime([small, { ...big, load: null }], at(100, 0), legsOf([small, big]));
   const many = parkedTime([small, big], at(100, 0), legsOf([small, big]));
-  assert.ok(Math.abs(many.minutes - one.minutes - 2 * walkMin(at(100, 0), big) * 3) < 0.01);
+  assert.ok(Math.abs(many.minutes - one.minutes - 2 * walkMin(at(100, 0), big) * 2) < 0.01); // 30 cajas = 3 viajes
 });

@@ -16,7 +16,7 @@ test('importar un archivo manipulado no cuela HTML ni tipos raros', () => {
   assert.equal(added, 4);
   const x = store.findClient('Bar <b>X</b>');
   assert.equal(x.visits, 0);
-  assert.equal(x.service, 10);
+  assert.equal(x.service, 12);
   assert.deepEqual(x.windows, []);
   assert.equal(x.phone, '600123123');
   assert.equal(x.lat, null); // "41" no es un número: sin ubicar
