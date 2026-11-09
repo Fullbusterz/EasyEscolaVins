@@ -17,15 +17,19 @@ const empty = () => ({
     tomtomKey: '',
     depot: DEFAULT_DEPOT,
     shiftStart: '07:30',
-    service: 10,
+    // Descarga: lo fijo de una entrega una vez aparcado. Lo que suman las cajas (viajes con la carretilla)
+    // y lo que cuesta aparcar en cada sitio van aparte; ver service.js.
+    service: 12,
+    park: 0,
     returnToDepot: true,
     // Horarios de entrega de los clientes al ordenar la ruta (con margen, ver hours.js). Se apagan en Ajustes.
     useWindows: true,
     hoursV: 2,
+    serviceV: 1,
     nav: 'waze',
     leaveIn: 10,
   },
-  clients: {}, // clave normalizada -> { key, name, address, lat, lon, label, windows, service, phone, notes, visits, updatedAt }
+  clients: {}, // clave normalizada -> { key, name, address, lat, lon, label, windows, service, park, phone, notes, visits, updatedAt }
   routes: {}, // 'YYYY-MM-DD' -> { date, stops: [...], plan, status, pairs, history }
 });
 
@@ -49,6 +53,14 @@ function load() {
     const settings = { ...base.settings, ...(data.settings || {}) };
     // 04/11/2026: los horarios, que estaban apagados (1.9.0), vuelven encendidos y con margen.
     if (data.settings?.hoursV !== 2) Object.assign(settings, { useWindows: true, hoursV: 2 });
+    // 09/11/2026: el tiempo de una entrega pasa a contar las cajas (los viajes con la carretilla) y lo que
+    // cuesta aparcar, que antes no entraban. Los 10 minutos de antes eran para todo el mundo; medido con un
+    // pedido de una caja son 12. Lo aprendido de las entregas anteriores eran tiempos totales, que ahora
+    // significan otra cosa (el tiempo fijo, sin los viajes), así que se vuelve a aprender desde cero.
+    if (data.settings?.serviceV !== 1) {
+      Object.assign(settings, { service: 12, park: 0, serviceV: 1 });
+      for (const c of Object.values(clients)) Object.assign(c, { service: 12, serviceLog: [], serviceLearned: false, park: 0, parkLog: [], parkLearned: false });
+    }
     return { ...base, ...data, clients, settings };
   } catch {
     // Antes de empezar de cero, se aparta lo que había para poder recuperarlo a mano.
@@ -126,7 +138,9 @@ export function sanitizeClient(c) {
     lon: located ? lon : null,
     label: str(c.label),
     windows: cleanWindows(c.windows),
-    service: int(c.service, 1, 180, 10),
+    service: int(c.service, 1, 180, 12),
+    // Lo que cuesta encontrar sitio donde aparcar en este cliente. Se pone a mano: varía demasiado.
+    park: int(c.park, 0, 120, 0),
     phone: str(c.phone, 40),
     notes: str(c.notes, 500),
     // Con el horario: 'strict' (no se le puede llegar tarde), 'flex' (no pasa nada por pasarse un poco) o normal.
@@ -138,6 +152,9 @@ export function sanitizeClient(c) {
     windowsConfirmed: !!c.windowsConfirmed,
     serviceLog: Array.isArray(c.serviceLog) ? c.serviceLog.map((m) => int(m, 1, 120, 0)).filter(Boolean).slice(-8) : [],
     serviceLearned: !!c.serviceLearned,
+    // Lo mismo para aparcar: lo medido en las últimas veces y si ya hay bastante para fiarse.
+    parkLog: Array.isArray(c.parkLog) ? c.parkLog.map((m) => int(m, 0, 120, -1)).filter((m) => m >= 0).slice(-8) : [],
+    parkLearned: !!c.parkLearned,
     updatedAt: Math.min(int(c.updatedAt, 0, Number.MAX_SAFE_INTEGER, 0), Date.now()),
   };
 }
@@ -165,6 +182,8 @@ export function rememberClient(data, { renamedFrom } = {}) {
 }
 
 // Tiempo real de descarga en un cliente: con 3 o más entregas, la mediana pasa a ser su tiempo de descarga.
+// `minutes` es solo la parte fija (quien llama le ha quitado ya los viajes con la carretilla y lo de aparcar,
+// ver unloadFrom en service.js): así la mediana vale igual el día de 2 cajas que el de 20.
 export function learnService(name, minutes) {
   const c = findClient(name);
   if (!c || !(minutes >= 1 && minutes <= 90)) return null;
@@ -174,6 +193,21 @@ export function learnService(name, minutes) {
     const sorted = [...log].sort((a, b) => a - b);
     patch.service = sorted[Math.floor(sorted.length / 2)];
     patch.serviceLearned = true;
+  }
+  return rememberClient(patch);
+}
+
+// Lo que cuesta aparcar en un cliente, medido. Igual que la descarga: con 3 o más veces, la mediana manda.
+// Se guarda aparte porque son cosas distintas: un local puede despacharse rápido y ser un infierno de aparcar.
+export function learnPark(name, minutes) {
+  const c = findClient(name);
+  if (!c || !(minutes >= 0 && minutes <= 60)) return null;
+  const log = [...(c.parkLog || []), Math.round(minutes)].slice(-8);
+  const patch = { name: c.name, parkLog: log };
+  if (log.length >= 3) {
+    const sorted = [...log].sort((a, b) => a - b);
+    patch.park = sorted[Math.floor(sorted.length / 2)];
+    patch.parkLearned = true;
   }
   return rememberClient(patch);
 }
@@ -222,10 +256,10 @@ export function isoDate(d = new Date()) {
 
 // Configuración para un compañero: almacén, jornada y clientes. Nunca las claves: cada uno pone la suya.
 export function exportConfig() {
-  const { depot, shiftStart, service, returnToDepot, nav } = state.settings;
+  const { depot, shiftStart, service, park, returnToDepot, nav } = state.settings;
   return JSON.stringify({
-    app: 'ruta-escola', kind: 'config', version: 4, exportedAt: new Date().toISOString(),
-    settings: { depot, shiftStart, service, returnToDepot, nav }, clients: state.clients,
+    app: 'ruta-escola', kind: 'config', version: 5, exportedAt: new Date().toISOString(),
+    settings: { depot, shiftStart, service, park, returnToDepot, nav }, clients: state.clients,
   });
 }
 
@@ -239,6 +273,7 @@ export function applyConfig(cfg) {
   if (lat !== null && lon !== null) { patch.depot = { name: str(d.name, 120) || 'Almacén', lat, lon }; applied.push('almacén'); }
   if (typeof cfg.shiftStart === 'string' && /^\d{2}:\d{2}$/.test(cfg.shiftStart)) { patch.shiftStart = cfg.shiftStart; applied.push('hora de inicio'); }
   if (cfg.service != null) patch.service = int(cfg.service, 1, 180, state.settings.service);
+  if (cfg.park != null) patch.park = int(cfg.park, 0, 120, state.settings.park);
   if (typeof cfg.returnToDepot === 'boolean') patch.returnToDepot = cfg.returnToDepot;
   if (cfg.nav === 'waze' || cfg.nav === 'gmaps') patch.nav = cfg.nav;
   setSettings(patch);

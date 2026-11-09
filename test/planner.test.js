@@ -21,7 +21,7 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   throw new Error('URL inesperada ' + url);
 };
-const { computePlan } = await import('../js/planner.js');
+const { computePlan, fitService } = await import('../js/planner.js');
 
 const depot = { lat: 41.37, lon: 2.07 };
 const night = new Date('2026-11-03T03:00:00'); // factor de tráfico 1,1
@@ -113,4 +113,18 @@ test('con la ventana de un cliente, el orden a mano avisa de que llegas tarde', 
   const hand = await computePlan({ ...base, stops: w, fixedOrder: ['b', 'a'] });
   assert.deepEqual(hand.order, ['b', 'a']);
   assert.ok(hand.late > 0);
+});
+
+test('la ventana se recorta por la descarga: hay que acabar antes de que cierren, no solo llegar', () => {
+  // 25 cajas (35 min de descarga) en un cliente que cierra a las 14:00: hay que estar allí a las 13:25,
+  // porque empezar a las 13:56 significa seguir descargando a las 14:31, con el cliente cerrado.
+  assert.deepEqual(fitService([[480, 840]], 35), [[480, 805]]);
+  assert.deepEqual(fitService([[480, 840]], 10), [[480, 830]]);
+  assert.deepEqual(fitService([[480, 840], [960, 1140]], 20), [[480, 820], [960, 1120]]);
+  // Sin descarga conocida, la ventana no se toca
+  assert.deepEqual(fitService([[480, 840]], 0), [[480, 840]]);
+  assert.deepEqual(fitService([], 30), []);
+  // Si la descarga no cabe en la franja no se declara imposible: se deja un hueco mínimo y que el
+  // optimizador la ordene con criterio (el aviso de que va justo es cosa de la pantalla, no del solver).
+  assert.deepEqual(fitService([[480, 500]], 40), [[480, 490]]);
 });

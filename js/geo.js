@@ -64,6 +64,12 @@ const LOCAL_PART = new RegExp(String.raw`^\s*${LOCAL_WORDS}(?![\p{L}])`, 'iu');
 const LOCAL_TAIL = new RegExp(String.raw`(\b\d+\s*[a-z]?)\s+${LOCAL_WORDS}(?![\p{L}]).*$`, 'iu');
 // «C.C.GRAN VIA- GRAN VIA, 75» o «CENTRO COMERCIAL X, CALLE…»: el nombre del centro comercial delante de la calle.
 const MALL = /^\s*(?:c\.\s?c\.?|c\.c\b|centro comercial|centre comercial)\s*[^,-]*(?:-\s*|,\s*(?=[^,]*,))/i;
+// «268 BIS», «12 TER», «5 DUP»: el bis es parte del portal, no de la calle, y el callejero casi nunca lo tiene.
+// Con el sufijo, ICGC se va a otra población (busca «Provença 268 bis» y devuelve «Provença 2 bis, Montcada»)
+// y CartoCiudad devuelve los portales de al lado (267, 269), así que la parada se queda sin ubicar. Se busca el
+// portal sin el sufijo: es la misma puerta o la de al lado, a unos metros, y para ir a repartir da igual.
+const PORTAL_SUFFIX = /(\d)\s*(?:bis|ter|quater|dup(?:licado|do)?|dpdo)\b\.?/gi;
+
 // Calles que solo con su nombre corto el buscador confunde con otra, por población.
 const STREET_ALIAS = { "L'Hospitalet de Llobregat": [[/^\s*gran\s+via\b/i, 'Avinguda de la Gran Via']] };
 const DISTRICTS = new Set(['ciutat vella', 'eixample', 'sants montjuic', 'les corts', 'sarria sant gervasi', 'gracia',
@@ -76,6 +82,7 @@ export function normalizeAddress(q) {
   // en el callejero: «Rambla dels Caputxins 31» no la encuentra nadie; «La Rambla 31» sí.
   s = s.replace(/^\s*(?:la\s+)?rambla\s+(?:de\s+les\s+|de\s+la\s+|dels?\s+|de\s+)?(?:canaletes|estudis|sant\s+josep|caputxins|santa\s+m[oò]nica|flors)\b/i, 'La Rambla');
   s = s.replace(/ de las /gi, ' de les ').replace(/ de los /gi, ' dels ').replace(/\bn[ºo°]\.?\s*/gi, '');
+  s = s.replace(PORTAL_SUFFIX, '$1');
   // Lo que va tras el número es del local ("75 LOCAL 2", "12 BAJOS", "3 PISO 2"): los buscadores no lo
   // entienden y no devuelven nada. Se busca el portal.
   const parts = s.split(',').map((p) => p.replace(LOCAL_TAIL, '$1'))
@@ -103,8 +110,14 @@ const sameTown = (want, got) => !want || (got && (fold(got).includes(want) || wa
 // buscador ha devuelto otra calle parecida.
 const STREET_STOP = new Set(['carrer', 'calle', 'avinguda', 'avenida', 'passeig', 'paseo', 'placa', 'plaza', 'rambla', 'ronda', 'carretera',
   'travessera', 'passatge', 'placeta', 'cami', 'via', 'de', 'del', 'dels', 'la', 'les', 'el', 'els', 'i', 'y', 'sn', 'local', 'bloc', 'bajos', 'baixos']);
-function streetWords(q) {
-  return fold(String(q).split(',')[0]).split(' ').filter((w) => w.length > 2 && !/\d/.test(w) && !STREET_STOP.has(w));
+export function streetWords(q) {
+  const first = String(q).split(',')[0];
+  const words = (x) => fold(x).split(' ').filter((w) => w.length > 2 && !/\d/.test(w) && !STREET_STOP.has(w));
+  // Lo que va detrás del número es del portal, no de la calle («268 BIS», «12 esquina Aribau»). El callejero no
+  // lo devuelve en la etiqueta, así que exigirlo tumbaba resultados buenos. Si al cortar no queda nombre
+  // (calles que empiezan por un número, «11 de Setembre»), se mira la línea entera como antes.
+  const before = words(first.replace(/\b\d{1,4}\b[\s\S]*$/, ''));
+  return before.length ? before : words(first);
 }
 // Nombre en castellano frente al catalán del mapa: "aragon"/"arago", "corcega"/"corsega", "valencia"/"valencia".
 function nearWord(w, l) {

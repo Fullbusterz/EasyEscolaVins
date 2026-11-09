@@ -65,6 +65,8 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
   // A pie: dentro de un aparcamiento, de la entrega a la furgoneta y de ahí a la siguiente (sin coche);
   // para llegar a él o salir de él, el coche más el paseo entre la furgoneta y la entrega.
   const wp = walkPlan(stops, parking);
+  // Cuántas entregas comparten el aparcamiento de la parada i (1 si va por su cuenta).
+  const groupSize = (i) => (wp[i].group < 0 ? 1 : Math.max(1, wp.filter((w) => w.group === wp[i].group).length));
   const fromG = parkedAt != null && parking[parkedAt] ? parkedAt : -1;
   const fromWalk = fromG >= 0 ? walkMin(from, parking[fromG]) : 0;
   const node = (i) => (i === 0 ? { group: fromG, walk: fromWalk } : i === n + 1 ? { group: -1, walk: 0 } : wp[i - 1]);
@@ -81,7 +83,16 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     back,
     start: startMin,
     returnTo: returnToDepot,
-    stops: stops.map((s, i) => ({ windows: s.windows || [], service: (s.service ?? 10) + wp[i].extra })),
+    // El cliente tiene que poder recibir el pedido entero antes de cerrar, no solo verte llegar: una descarga de
+    // 25 cajas que empieza 4 minutos antes de la hora de cierre acaba media hora después de que hayan cerrado.
+    // Por eso se planifica con la ventana recortada por lo que dura la descarga (ver fitService).
+    stops: stops.map((s, i) => {
+      // Aparcar se paga una vez por sitio, no por entrega: si dejas la furgoneta y haces tres entregas
+      // andando desde ahí, son tres descargas y un solo aparcamiento. Se reparte entre las del grupo para
+      // que la suma salga bien sea cual sea el orden en que el optimizador las acabe poniendo.
+      const service = (s.service ?? 12) + (s.park ?? 0) / groupSize(i) + wp[i].extra;
+      return { windows: fitService(s.windows || [], service), service };
+    }),
   };
   let fixed = null;
   if (Array.isArray(fixedOrder)) {
@@ -142,6 +153,15 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     startMin,
     pairs: next,
   };
+}
+
+// Ventanas recortadas por lo que se tarda en descargar: hay que llegar con tiempo de acabar antes de que cierren.
+// Si la descarga no cabe entera en la franja, se deja un hueco mínimo para no declararla imposible (el
+// optimizador la pondría «tarde» pase lo que pase y dejaría de ordenarla con criterio).
+const MIN_FIT = 10;
+export function fitService(windows, service) {
+  return (windows || []).map(([open, close]) => [open, Math.max(open + MIN_FIT, close - (service || 0))])
+    .filter(([open, close]) => close >= open);
 }
 
 function evaluateOrder(order, ctx) {

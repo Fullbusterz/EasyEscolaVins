@@ -93,3 +93,41 @@ test('a igual hora de vuelta, entrega antes en vez de esperar a que abra otro', 
   const best = optimize({ matrix, stops, start: 450, returnTo: false });
   assert.deepEqual(best.order, [2, 1]);
 });
+
+test('no se queda parado esperando a media ruta si hay clientes abiertos (caso de Ferran)', () => {
+  // Reparto real del 9/11 por el Eixample: tiempos redondeados a minutos y las ventanas ya con el margen de
+  // hours.js. La vuelta la marca la parada 8 (no abre hasta las 11:00), así que el día acaba a la misma hora
+  // se haga el orden que se haga; con eso clavado, el desempate quedaba entre conducir y esperar, y salía
+  // más barato plantarse en la parada 1 (que no abre hasta las 9) y esperar allí una hora.
+  const D = [
+    [0, 35, 34, 43, 47, 42, 43, 41, 35],
+    [35, 0, 6, 12, 16, 11, 12, 11, 7],
+    [34, 6, 0, 13, 17, 12, 13, 12, 8],
+    [43, 12, 13, 0, 9, 5, 5, 8, 12],
+    [47, 16, 17, 9, 0, 10, 9, 11, 17],
+    [42, 11, 12, 5, 10, 0, 6, 8, 11],
+    [43, 12, 13, 5, 9, 6, 0, 8, 12],
+    [41, 11, 12, 8, 11, 8, 8, 0, 10],
+    [35, 7, 8, 12, 17, 11, 12, 10, 0],
+  ];
+  const W = [[540, 900], [480, 750], [510, 900], [480, 750], [420, 630], [480, 810], [420, 810], [660, 840]];
+  const stops = W.map((w) => ({ windows: [w], service: 10 }));
+  const ctx = { matrix: D, back: D.map((row) => row[0]), stops, start: 463, returnTo: true };
+  const r = optimize(ctx);
+  assert.equal(r.late, 0);
+  // Toda la espera que quede tiene que ser en la última parada (la que no abre hasta las 11): esa no hay
+  // orden que la evite. Parado a media ruta, con entregas por hacer, ninguna.
+  const esperaEnMedio = r.legs.slice(0, -1).reduce((s, l) => s + l.wait, 0);
+  assert.equal(esperaEnMedio, 0, `${esperaEnMedio} min parado a media ruta, orden ${r.order}`);
+  // Y el día no puede alargarse por esto: la vuelta sigue marcada por la parada 8.
+  assert.ok(r.end <= 705, `vuelta ${r.end}`);
+});
+
+test('esperar parado cuesta más que conducir, pero la vuelta pronto manda sobre las dos', () => {
+  // Dos paradas iguales sin ventana: no hay espera posible y gana la ruta corta (nada cambia respecto a antes).
+  const D = [[0, 10, 20], [10, 0, 12], [20, 12, 0]];
+  const stops = [{ windows: [], service: 10 }, { windows: [], service: 10 }];
+  const r = optimize({ matrix: D, back: D.map((row) => row[0]), stops, start: 450, returnTo: true });
+  assert.deepEqual(r.order, [1, 2]);
+  assert.equal(r.wait, 0);
+});

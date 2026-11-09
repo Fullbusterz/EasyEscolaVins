@@ -3,9 +3,16 @@
 // Nodo 0 = punto de salida (almacén o posición actual); nodos 1..n = paradas.
 
 const LATE_PENALTY = 1000; // cada minuto tarde pesa como ~17 h de ruta: llegar tarde es lo último
-// A igual hora de vuelta, mejor entregar antes que esperar parado a que abra otro: cada minuto que se
-// adelanta una entrega vale muy poco (≈330 minutos·parada = 1 minuto de jornada): solo deshace empates.
-const EARLY = 0.003;
+const DRIVE = 0.25; // cada minuto al volante
+// Esperar parado, más que conducir. Cuando la vuelta la marca una parada que abre tarde (una que no abre hasta
+// las 11), el día acaba a la misma hora en cualquier orden, y el desempate queda entre conducción y espera: con
+// la espera más barata, el optimizador aparcaba y esperaba una hora en la primera parada en vez de ir
+// repartiendo a las que ya estaban abiertas.
+const WAIT = 0.15;
+// A igual hora de vuelta, mejor repartir pronto: cada minuto que se adelanta una entrega vale poco (en una ruta
+// de 20 paradas, adelantarlas todas un minuto son 0,2 min de jornada), pero lo justo para que la espera que no
+// hay forma de evitar caiga al final de la ruta y no en medio, parado con entregas por hacer.
+const EARLY = 0.01;
 
 // Recorre un orden y devuelve horarios, esperas y retrasos.
 export function evaluate(order, ctx) {
@@ -31,9 +38,9 @@ export function evaluate(order, ctx) {
   const back = returnTo !== false && order.length ? (ctx.back ? ctx.back[prev] : matrix[prev][0]) : 0;
   const end = t + back;
   const drive = legs.reduce((s, l) => s + l.drive, 0) + back;
-  // Primero no llegar tarde, luego acabar antes; a igual hora de fin, menos conducción, menos esperas
-  // parado y entregas más pronto.
-  const cost = late * LATE_PENALTY + (end - start) + 0.25 * drive + 0.1 * wait + EARLY * early;
+  // Primero no llegar tarde, luego acabar antes; a igual hora de fin, menos esperas parado, menos
+  // conducción y entregas más pronto.
+  const cost = late * LATE_PENALTY + (end - start) + DRIVE * drive + WAIT * wait + EARLY * early;
   return { legs, end, late, wait, drive, cost };
 }
 
@@ -75,7 +82,7 @@ function prepare(ctx) {
 }
 
 // Estado de ruta por posición k: hora al acabar la parada k-1 (T[0] = salida) y acumulados de retraso,
-// conducción y W = coste blando (0,1·espera + EARLY·minutos desde la salida hasta cada entrega).
+// conducción y W = coste blando (WAIT·espera + EARLY·minutos desde la salida hasta cada entrega).
 const makeState = (n) => ({ T: new Float64Array(n + 1), L: new Float64Array(n + 1), W: new Float64Array(n + 1), D: new Float64Array(n + 1) });
 
 // Coste de o[] reaprovechando el estado S hasta la posición a; escribe el resto en X (puede ser el mismo S).
@@ -94,14 +101,14 @@ function tail(P, o, a, S, X, limit) {
       if (q < w1) { if (wOpen[q] > arrive) begin = wOpen[q]; }
       else late += arrive - wClose[w1 - 1];
     }
-    wait += 0.1 * (begin - arrive) + EARLY * (begin - start);
+    wait += WAIT * (begin - arrive) + EARLY * (begin - start);
     t = begin + svc[i];
     prev = i;
     X.T[k + 1] = t; X.L[k + 1] = late; X.W[k + 1] = wait; X.D[k + 1] = drive;
-    if (late * LATE_PENALTY + (t - start) + 0.25 * drive + wait > limit) return Infinity;
+    if (late * LATE_PENALTY + (t - start) + DRIVE * drive + wait > limit) return Infinity;
   }
   const b = n ? back[prev] : 0;
-  return late * LATE_PENALTY + (t + b - start) + 0.25 * (drive + b) + wait;
+  return late * LATE_PENALTY + (t + b - start) + DRIVE * (drive + b) + wait;
 }
 
 function fullCost(P, o, S) { S.T[0] = P.start; S.L[0] = S.W[0] = S.D[0] = 0; return tail(P, o, 0, S, S, Infinity); }
@@ -129,11 +136,11 @@ export function bruteForce(ctx) {
         if (q < w1) { if (wOpen[q] > arrive) begin = wOpen[q]; }
         else late += arrive - wClose[w1 - 1];
       }
-      const t = begin + svc[i], wait = S.W[k] + 0.1 * (begin - arrive) + EARLY * (begin - start), drive = S.D[k] + d;
-      if (nonneg && late * LATE_PENALTY + (t - start) + 0.25 * drive + wait >= bestC) continue;
+      const t = begin + svc[i], wait = S.W[k] + WAIT * (begin - arrive) + EARLY * (begin - start), drive = S.D[k] + d;
+      if (nonneg && late * LATE_PENALTY + (t - start) + DRIVE * drive + wait >= bestC) continue;
       o[k] = i;
       if (k === n - 1) {
-        const b = back[i], c = late * LATE_PENALTY + (t + b - start) + 0.25 * (drive + b) + wait;
+        const b = back[i], c = late * LATE_PENALTY + (t + b - start) + DRIVE * (drive + b) + wait;
         if (c < bestC) { bestC = c; best = Array.from(o); }
         continue;
       }

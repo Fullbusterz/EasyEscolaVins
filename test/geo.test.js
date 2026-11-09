@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAddress, sameNumber } from '../js/geo.js';
+import { normalizeAddress, sameNumber, streetWords } from '../js/geo.js';
 
 test('al buscar, lo del local tras el número se quita (el buscador quiere el portal)', () => {
   assert.equal(normalizeAddress('CARRER COPERNIC, 75 LOCAL 2, BARCELONA'), 'CARRER COPERNIC, 75, Barcelona');
@@ -55,4 +55,26 @@ test('el número del resultado tiene que ser el buscado (o caer en su tramo «6-
   assert.equal(sameNumber('PINTOR FORTUNY, 6-8, Barcelona', 'Carrer del Pintor Fortuny 6, Barcelona'), true);
   assert.equal(sameNumber('CARRER MAJOR, Barcelona', 'Carrer Major 3, Barcelona'), true); // sin número no hay qué comparar
   assert.equal(sameNumber('CARRER MAJOR 3, 08001 Barcelona', 'Carrer Major 3, Barcelona'), true); // el código postal no cuenta
+});
+
+test('el «bis» del portal no se busca: es de la puerta, no de la calle', () => {
+  // Con el sufijo, ICGC devolvía «Provença 2 bis, Montcada» y CartoCiudad los portales de al lado:
+  // la parada se quedaba sin ubicar aunque la dirección del portal fuese correcta.
+  assert.equal(normalizeAddress('Carrer de Provença 268 BIS, Barcelona'), 'Carrer de Provença 268, Barcelona');
+  assert.equal(normalizeAddress('GRAN VIA 123 bis, Barcelona'), 'GRAN VIA 123, Barcelona');
+  assert.match(normalizeAddress('Carrer Major 12 TER, Cornellà'), /Major 12,/);
+  assert.match(normalizeAddress('AVDA DIAGONAL 5 DUPLICADO, BARCELONA'), /DIAGONAL 5,/);
+  assert.match(normalizeAddress('C/ Muntaner, 135 BIS, BARCELONA'), /Muntaner, 135,/);
+  // «bis» pegado a una palabra, o sin número delante, es nombre de calle y no se toca
+  assert.match(normalizeAddress('Carrer del Bisbe 5, Barcelona'), /Bisbe 5/);
+  assert.match(normalizeAddress('Carrer Bisbal 7, Barcelona'), /Bisbal 7/);
+});
+
+test('lo que va tras el número no se exige en el resultado del buscador', () => {
+  // El callejero devuelve «Carrer de Provença, 268, Barcelona»: si se exigiese «bis» no casaría nunca.
+  assert.deepEqual(streetWords('Carrer de Provença 268 bis, Barcelona'), ['provenca']);
+  assert.deepEqual(streetWords('Carrer Major 12 esquina Aribau, Barcelona'), ['major']);
+  assert.deepEqual(streetWords('Gran Via de les Corts Catalanes 670, Barcelona'), ['gran', 'corts', 'catalanes']);
+  // Calle que empieza por número: al cortar no queda nombre, así que se mira la línea entera
+  assert.deepEqual(streetWords('11 de Setembre 4, Sant Boi'), ['setembre']);
 });
