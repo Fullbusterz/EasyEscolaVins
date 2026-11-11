@@ -191,9 +191,9 @@ test('carga del pedido: cajas exactas, botellas estimadas por tamaño de caja, y
     [4, 'VIEJA', 'C/ X, 4', 'BARCELONA', '', '', '', '', 5], // APK anterior a la 1.4.0: sin carga
   ]));
   const [bar, cafe, hotel, vieja] = r.stops;
-  assert.deepEqual(bar.load, { boxes: 18, loose: 49, bottles: 49 + 6 * 16 + 4 * 2 });
+  assert.deepEqual(bar.load, { boxes: 18, big: 16, loose: 49, bottles: 49 + 6 * 16 + 4 * 2 });
   assert.equal(bigOrder(bar.load), true); // 153 botellas
-  assert.deepEqual(cafe.load, { boxes: 1, loose: 6, bottles: 12 });
+  assert.deepEqual(cafe.load, { boxes: 1, big: 1, loose: 6, bottles: 12 });
   assert.equal(bigOrder(cafe.load), false);
   assert.equal(bigOrder(hotel.load), true); // 31 cajas
   assert.equal(vieja.load, null);
@@ -236,4 +236,21 @@ test('factura: devoluciones, contactos con teléfono y dónde entregar se quedan
   assert.equal(f(g), 'RECIBE MARTA');
   assert.equal(f(h), 'TEL. 93 000 00 00');
   assert.equal(f(i), 'Pau Director (+34600112233)'); // el teléfono va en la línea de debajo del nombre
+});
+
+test('las cajas grandes se cuentan aparte (los dos tramos de arriba del portal)', () => {
+  // [.., orden, sueltas, cajas de 2, de 3 a 5, de 6 a 11, de 12 o más]
+  const r = parsePortal(ruta([
+    [1, 'SOLO PEQUEÑAS', 'C/ X, 1', 'BARCELONA', '', '', '', '', 1, 0, 3, 4, 0, 0],
+    [2, 'SOLO GRANDES', 'C/ X, 2', 'BARCELONA', '', '', '', '', 2, 0, 0, 0, 2, 3],
+    [3, 'MEZCLA', 'C/ X, 3', 'BARCELONA', '', '', '', '', 3, 12, 1, 1, 1, 1],
+  ]));
+  const [pequenas, grandes, mezcla] = r.stops;
+  assert.equal(pequenas.load.boxes, 7);
+  assert.equal(pequenas.load.big, 0); // las de 2 y las de 3 a 5 no son grandes
+  assert.equal(grandes.load.boxes, 5);
+  assert.equal(grandes.load.big, 5);
+  assert.equal(mezcla.load.boxes, 4);
+  assert.equal(mezcla.load.big, 2); // una de 6 a 11 y una de 12
+  assert.equal(mezcla.load.loose, 12);
 });

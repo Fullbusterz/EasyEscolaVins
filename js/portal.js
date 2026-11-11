@@ -181,8 +181,12 @@ export function parsePortal(text) {
     // Las APK anteriores a la 1.4.0 no mandan la carga: entonces la parada queda sin ella.
     if (row.length >= 14) {
       const n = (v) => (Number.isFinite(+v) && +v > 0 ? Math.min(+v, 10000) : 0);
-      const l = g.load || { boxes: 0, bottles: 0, loose: 0 };
+      const l = g.load || { boxes: 0, big: 0, bottles: 0, loose: 0 };
       l.boxes += n(c2) + n(c35) + n(c611) + n(c12);
+      // Cajas grandes: las de los dos tramos de arriba del portal (de 6 a 11 y de 12 o más). El portal no
+      // dice cuántas botellas lleva cada caja, solo en qué tramo cae, así que esta es la única raya que se
+      // puede trazar: una caja de 6 y una de 11 vienen en el mismo saco.
+      l.big += n(c611) + n(c12);
       l.loose += n(loose);
       l.bottles += n(loose) + 2 * n(c2) + 4 * n(c35) + 6 * n(c611) + 12 * n(c12);
       g.load = l;

@@ -10,7 +10,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.16.0';
+export const VERSION = '1.17.0';
 
 // ---------- Utilidades ----------
 
@@ -129,15 +129,21 @@ const planStop = (x) => {
   const { unload, park, tripsMin } = stopParts(x, settings());
   return { id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: unload + tripsMin, park, load: x.load };
 };
-// Carga del pedido (cajas y botellas, del portal). Un pedido grande (+70 botellas o +30 cajas) se marca bien
-// visible, y si no cabe en un viaje de carretilla se dice, que es de donde salen los minutos de más.
+// Carga del pedido, del portal: cajas, cuántas de ellas son grandes y botellas sueltas. El total de botellas
+// no se enseña (es una estimación y no dice nada que no digan las cajas), pero sigue contando para marcar un
+// pedido grande (+70 botellas o +30 cajas). Si no cabe en un viaje de carretilla también se dice, que es de
+// donde salen los minutos de más.
 function loadChip(x) {
   const l = x.load;
   if (!l || (!l.boxes && !l.bottles)) return '';
   const extra = extraTrips(x);
-  const what = esc([l.boxes ? plural(l.boxes, 'caja', 'cajas') : '', l.loose ? `${l.loose} sueltas` : ''].filter(Boolean).join(' + '));
+  const cajas = !l.boxes ? ''
+    : l.big >= l.boxes ? `${plural(l.boxes, 'caja grande', 'cajas grandes')}`
+    : l.big ? `${plural(l.boxes, 'caja', 'cajas')} (${l.big} ${l.big === 1 ? 'grande' : 'grandes'})`
+    : plural(l.boxes, 'caja', 'cajas');
+  const what = esc([cajas, l.loose ? `${l.loose} sueltas` : ''].filter(Boolean).join(' + '));
   const viajes = extra ? ` · ${extra + 1} viajes` : '';
-  return bigOrder(l) ? `<span class="chip big">Pedido grande · ${what} · ~${esc(l.bottles)} bot.${viajes}</span>` : `<span class="chip any">${what}${viajes}</span>`;
+  return bigOrder(l) ? `<span class="chip big">Pedido grande · ${what}${viajes}</span>` : `<span class="chip any">${what}${viajes}</span>`;
 }
 function timingChip(x) {
   if (x.timing === 'strict') return '<span class="chip strict">Estricto</span>';
