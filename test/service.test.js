@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { serviceFor, stopParts, unloadFrom, extraTrips, measure, toldOf, TRIP_MIN, DEFAULT_SERVICE } from '../js/service.js';
+import { serviceFor, stopParts, unloadFrom, extraTrips, measure, toldOf, toldWhy, TRIP_MIN, DEFAULT_SERVICE } from '../js/service.js';
 import { TROLLEY_BOXES, LOOSE_PER_BOX } from '../js/parking.js';
 
 const stop = (boxes, loose = 0, rest = {}) => ({ load: { boxes, loose, bottles: boxes * 6 + loose }, ...rest });
@@ -122,4 +122,39 @@ test('aparcar no se cobra dos veces cuando lo has dicho tú', () => {
   assert.equal(park, 0);
   // Y al aprender de una parada así, lo medido no arrastra un «aparcar» que no se ha usado.
   assert.equal(unloadFrom(30, stop(1, 0, { told: 30, park: 12 })), 30);
+});
+
+// ---------- ¿Por cuáles merece la pena preguntar? ----------
+
+const medido = { serviceLearned: true, service: 22 };
+
+test('solo pregunta por las paradas donde su número baila', () => {
+  // Local nuevo: no ha medido nada allí, así que su cuenta es un número de catálogo.
+  assert.deepEqual(toldWhy(stop(2), null), ['nunca lo he medido aquí']);
+  // Local de siempre y pedido normal: ya sabe lo que cuesta, no hay nada que preguntar.
+  assert.deepEqual(toldWhy(stop(2), medido), []);
+  // Haber medido solo lo de aparcar también cuenta como saber algo de ese sitio.
+  assert.deepEqual(toldWhy(stop(2), { parkLearned: true, park: 8 }), []);
+  // Local de siempre pero hoy el pedido es gordo: lo de otras veces ya no vale.
+  assert.deepEqual(toldWhy(stop(20), medido), ['hoy el pedido es grande']);
+  // Los dos motivos a la vez se cuentan los dos.
+  assert.deepEqual(toldWhy(stop(20), null), ['nunca lo he medido aquí', 'hoy el pedido es grande']);
+});
+
+test('lo que ya has dicho no se vuelve a preguntar', () => {
+  // Con un tiempo tuyo puesto (viene del cliente al traer la ruta) no hay duda que resolver,
+  // ni siendo un local nuevo con un pedido enorme.
+  assert.deepEqual(toldWhy(stop(20, 0, { told: 45 }), null), []);
+  // Un valor imposible no es haber dicho nada: se vuelve a preguntar.
+  assert.deepEqual(toldWhy(stop(2, 0, { told: 0 }), null), ['nunca lo he medido aquí']);
+});
+
+test('un pedido que no cabe en un viaje cuenta aunque no se sepan las botellas', () => {
+  // Pedido puesto a mano: 13 cajas y ninguna cuenta de botellas, así que «pedido grande» no salta,
+  // pero son dos viajes con la carretilla y eso ya cambia la parada.
+  const aMano = { load: { boxes: 13, loose: 0 } };
+  assert.equal(extraTrips(aMano), 1);
+  assert.deepEqual(toldWhy(aMano, medido), ['hoy no cabe en un viaje de carretilla']);
+  // Una caja de más no es motivo: cabe en un viaje y allí ya se ha medido.
+  assert.deepEqual(toldWhy({ load: { boxes: 12, loose: 0 } }, medido), []);
 });

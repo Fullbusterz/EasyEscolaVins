@@ -4,7 +4,7 @@ import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
 import { bigOrder } from './portal.js';
 import { oddHours, ODD_WINDOWS } from './hours.js';
-import { serviceFor, stopParts, measure, unloadFrom, extraTrips, toldOf, TRIP_MIN, MOVED_M, TOLD_MIN, TOLD_MAX, TOLD_CHOICES } from './service.js';
+import { serviceFor, stopParts, measure, unloadFrom, extraTrips, toldOf, toldWhy, TRIP_MIN, MOVED_M, TOLD_MIN, TOLD_MAX, TOLD_CHOICES } from './service.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
@@ -668,9 +668,14 @@ function renderClients() {
 // Paradas pendientes de las que no se sabe cuánto se tarda.
 const pendingTold = (r) => r.stops.filter((x) => !x.done && located(x) && toldOf(x) == null);
 
+// Por qué preguntar por esta parada (ver toldWhy en service.js): vacío = la app ya tiene un número decente.
+const toldWhyOf = (x) => toldWhy(x, x.name ? store.findClient(x.name) : null);
+const worthTold = (x) => toldWhyOf(x).length > 0;
+
 function toldBanner(r) {
   if (!settings().askTold || !r.stops.length) return '';
-  const n = pendingTold(r).length;
+  // Solo las que de verdad bailan: si de las pendientes ya sé lo que cuestan, no hay nada que decir.
+  const n = pendingTold(r).filter(worthTold).length;
   if (!n) return '';
   return `<div class="notice info">${I.clock}<div class="grow">Dime cuánto crees que tardarás en ${n === 1 ? 'una parada' : `${n} paradas`} y calculo las horas con tu tiempo, no con el mío.</div>
     <button class="btn line" data-action="open-told" style="min-height:40px;padding:0 12px">Decirlo</button></div>`;
@@ -691,7 +696,7 @@ function toldAside(x) {
 }
 
 function toldRow(x) {
-  const told = toldOf(x);
+  const told = toldOf(x), why = toldWhyOf(x);
   const btn = (v, label) => `<button data-action="told-set" data-id="${esc(x.id)}" data-v="${v}" class="${(told == null ? '' : String(told)) === String(v) ? 'on' : ''}" aria-pressed="${(told == null ? '' : String(told)) === String(v)}">${label}</button>`;
   return `<li>
     <b>${esc(x.name || x.address)}</b>
@@ -701,21 +706,34 @@ function toldRow(x) {
       ${TOLD_CHOICES.map((m) => btn(m, `${m} min`)).join('')}${btn('', 'Lo calculas tú')}
     </div>
     <div class="tiny faint">${esc(toldAside(x))}</div>
+    ${why.length ? `<div class="tiny faint">Te lo pregunto porque ${esc(why.join(' y '))}.</div>` : ''}
   </li>`;
 }
 
-function sheetTold(sh) {
+// Un día de 25 paradas no cabe en una hoja que se pueda contestar de pie en la furgoneta, así que de
+// entrada salen solo las que bailan y las demás quedan a un toque («Preguntar también por…»).
+function toldSplit(sh) {
   const r = currentRoute();
-  const list = sh.ids.map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
+  const all = sh.ids.map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
+  if (sh.all || all.length < 2) return { list: all, rest: [] };
+  const list = all.filter(worthTold);
+  // Si no destaca ninguna, se pregunta por todas: mejor eso que abrir una hoja vacía.
+  return list.length ? { list, rest: all.filter((x) => !worthTold(x)) } : { list: all, rest: [] };
+}
+
+function sheetTold(sh) {
+  const { list, rest } = toldSplit(sh);
   if (!list.length) {
     return `<h2 id="sheet-title">Tiempos de las paradas</h2>
       <div class="small muted">No queda ninguna parada pendiente.</div>
       <div class="foot"><button class="btn gold big block" data-action="close">Cerrar</button></div>`;
   }
-  const one = list.length === 1;
+  const one = list.length === 1 && !rest.length;
   return `<h2 id="sheet-title">${one ? `¿Cuánto tardarás en ${esc(list[0].name || list[0].address)}?` : '¿Cuánto crees que tardarás?'}</h2>
     <div class="small muted" style="margin:-6px 0 12px">Cuenta la parada entera: aparcar, entrar, entregar y los viajes con la carretilla. Con tu tiempo calculo las horas de llegada y el orden; lo que no digas lo calculo yo.</div>
+    ${rest.length ? `<div class="notice info" style="margin:0 0 12px">${I.clock}<div class="grow">Te pregunto por ${list.length === 1 ? 'la parada' : `las ${list.length} paradas`} donde mi cuenta es más floja. De ${rest.length === 1 ? 'la otra' : `las otras ${rest.length}`} ya sé lo que suele costar, así que no te las pongo.</div></div>` : ''}
     <ul class="parsed">${list.map(toldRow).join('')}</ul>
+    ${rest.length ? `<button class="btn line block" data-action="told-all" style="margin-top:10px">Preguntar también por ${rest.length === 1 ? 'la otra parada' : `las otras ${rest.length} paradas`}</button>` : ''}
     <div class="foot">
       <button class="btn gold big block" data-action="close">${sh.changed ? 'Listo · recalcular' : 'Listo'}</button>
       ${one ? '' : '<button class="btn ghost block" data-action="told-never">No volver a preguntarme</button>'}
@@ -726,7 +744,8 @@ function sheetTold(sh) {
 function maybeAskTold() {
   if (!settings().askTold || ui.sheet || ui.busy) return false;
   const pend = pendingTold(currentRoute());
-  if (!pend.length) return false;
+  // Si de ninguna de las pendientes hay duda, no se abre la hoja: cada una se puede decir desde su ficha.
+  if (!pend.some(worthTold)) return false;
   openSheet({ kind: 'told', ids: pend.map((x) => x.id) });
   return true;
 }
@@ -1659,6 +1678,8 @@ const actions = {
     ui.sheet.draft.told = el.dataset.v ? Math.min(TOLD_MAX, Math.max(TOLD_MIN, parseInt(el.dataset.v, 10) || 0)) : null;
     renderSheet();
   },
+  // «Preguntar también por las otras»: la hoja corta no esconde nada, solo lo deja a un toque.
+  'told-all': () => { if (ui.sheet?.kind === 'told') { ui.sheet.all = true; renderSheet(); } },
   'told-never': () => { store.setSettings({ askTold: false }); if (ui.sheet) closeSheet(); render(); toast('No preguntaré más. Se vuelve a encender en Ajustes'); },
   'paste-read': () => {
     syncDraft();

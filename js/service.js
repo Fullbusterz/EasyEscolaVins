@@ -19,6 +19,7 @@
 // lado, así que para un grupo con la furgoneta a dos manzanas se suman las dos cosas.
 
 import { trips } from './parking.js';
+import { bigOrder } from './portal.js';
 
 export const TRIP_MIN = 10; // cada viaje de más con la carretilla
 export const DEFAULT_SERVICE = 12; // descarga de un pedido de una caja, una vez aparcado
@@ -63,6 +64,28 @@ export function stopParts(stop, def = {}) {
 
 /** Viajes con la carretilla por encima del primero (0 si el pedido cabe en uno, o si no se sabe qué lleva). */
 export const extraTrips = (stop) => Math.max(0, trips(stop || {}) - 1);
+
+// ---------- ¿Por cuáles merece la pena preguntar? ----------
+
+// Preguntar por las 25 paradas de un día es una hoja interminable, y en la mayoría no hace falta: la app ya
+// ha medido allí lo que cuesta otras veces y el pedido de hoy es el de siempre. Su número baila de verdad
+// en dos sitios: el local donde nunca ha medido nada, y el día en que el pedido se sale de lo normal
+// (porque entonces lo de otras veces ya no sirve). Por esas pregunta de entrada; por el resto, solo si se
+// lo pides.
+
+/**
+ * Por qué vale la pena preguntar cuánto se tarda en esta parada, en frases para leer de corrido.
+ * Vacío = no hace falta molestar: o ya lo has dicho, o la app tiene un tiempo medido allí y el pedido de
+ * hoy es normal. `mem` es lo que hay guardado de ese cliente (store.findClient), o null si no hay nada.
+ */
+export function toldWhy(stop, mem) {
+  if (toldOf(stop) != null) return [];
+  const why = [];
+  if (!(mem?.serviceLearned || mem?.parkLearned)) why.push('nunca lo he medido aquí');
+  if (bigOrder(stop?.load)) why.push('hoy el pedido es grande');
+  else if (extraTrips(stop) > 0) why.push('hoy no cabe en un viaje de carretilla');
+  return why;
+}
 
 // ---------- Aprender de lo que ha pasado de verdad ----------
 
