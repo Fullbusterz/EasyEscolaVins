@@ -4,13 +4,13 @@ import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
 import { bigOrder } from './portal.js';
 import { oddHours, ODD_WINDOWS } from './hours.js';
-import { serviceFor, stopParts, measure, unloadFrom, extraTrips, TRIP_MIN, MOVED_M } from './service.js';
+import { serviceFor, stopParts, measure, unloadFrom, extraTrips, toldOf, TRIP_MIN, MOVED_M, TOLD_MIN, TOLD_MAX, TOLD_CHOICES } from './service.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.16.0';
+export const VERSION = '1.17.0';
 
 // ---------- Utilidades ----------
 
@@ -41,6 +41,7 @@ const I = {
   search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   map: '<svg viewBox="0 0 24 24"><path d="M9 4 3.5 6v14L9 18l6 2 5.5-2V4L15 6 9 4Zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
   phone: '<svg viewBox="0 0 24 24"><path d="M6.5 3.5h3l1.5 4-2 1.5a11 11 0 0 0 6 6l1.5-2 4 1.5v3a2 2 0 0 1-2 2A16 16 0 0 1 4.5 5.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+  clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5V12l3.5 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
 
 // Àrea DUM (carga y descarga): hay que validar cada parada en la app SPRO; máximo 30 minutos.
@@ -73,6 +74,8 @@ const ui = {
   sheet: null, // { kind, initial, ... }
   persisted: null,
   update: null, // service worker nuevo esperando
+  waitingPaste: null, // se ha abierto el portal: al volver, la ruta está copiada y se pega de un toque
+  bridgeOpen: false, // enseñar otra vez cómo guardar el marcador
 };
 
 function toast(msg, ms = 2600, action = null) {
@@ -138,6 +141,11 @@ function loadChip(x) {
   const what = esc([l.boxes ? plural(l.boxes, 'caja', 'cajas') : '', l.loose ? `${l.loose} sueltas` : ''].filter(Boolean).join(' + '));
   const viajes = extra ? ` · ${extra + 1} viajes` : '';
   return bigOrder(l) ? `<span class="chip big">Pedido grande · ${what} · ~${esc(l.bottles)} bot.${viajes}</span>` : `<span class="chip any">${what}${viajes}</span>`;
+}
+// El tiempo que ha dicho el repartidor para esta parada: manda sobre lo que calcularía la app.
+function toldChip(x) {
+  const told = toldOf(x);
+  return told == null ? '' : `<span class="chip told">${I.clock}Tú: ${told} min</span>`;
 }
 function timingChip(x) {
   if (x.timing === 'strict') return '<span class="chip strict">Estricto</span>';
@@ -292,7 +300,7 @@ function orderedStops(r) {
 }
 
 function stopCard(s, i, leg, extra = '', park = null) {
-  const chips = [loadChip(s), windowsChips(s.windows), oddChip(s), timingChip(s)];
+  const chips = [loadChip(s), toldChip(s), windowsChips(s.windows), oddChip(s), timingChip(s)];
   // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible y,
   // además, descuenta lo que dura la descarga: se puede llegar a tiempo y aun así no acabar antes de cerrar).
   const real = pastHours(s, leg);
@@ -335,11 +343,10 @@ function firstSteps() {
       ${step(false, 3, portalApp() || !isAndroid ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
         ? `<div class="small muted">Toca «Traer la ruta del portal», entra con tu usuario del portal (solo la primera vez) y pulsa el botón dorado. Ahí mismo puedes pedir que te avise cuando salga la ruta de mañana.</div>`
         : !isAndroid
-          // Sin APK: el marcador de Ajustes la trae del portal con tu usuario. En iPhone instalado no puede
-          // volver sola (iOS no deja entrar nada en una web instalada), así que ahí se copia y se pega.
-          ? `<div class="small muted">En Ajustes, <b>«Traer la ruta del portal»</b>: guardas el marcador una vez y luego la traes con tu usuario del portal.${isIOS && isStandalone ? ' Desde el icono de la pantalla de inicio habrá que pegarla; en Safari entra sola.' : ''}
-               También puedes copiar la lista y usar «Pegar lista».</div>
-             <button class="btn ghost block" data-action="tab" data-tab="settings" style="margin-top:10px">Ver cómo traerla del portal</button>`
+          // Sin APK lo hace el marcador, con tu usuario del portal: se guarda una vez (como instalar la APK)
+          // y a partir de ahí la ruta entra de un toque.
+          ? `<div class="small muted">Toca <b>«Traer la ruta del portal»</b>: guardas el marcador una vez ${isIOS ? 'en Safari' : 'en el navegador'} y luego la ruta entra de un toque, con tu usuario del portal.</div>
+             <button class="btn ghost block" data-action="open-bring" style="margin-top:10px">Traer la ruta del portal</button>`
           : `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
     </ol>
   </div>`;
@@ -420,6 +427,8 @@ function renderPlanning(r) {
     html += `<div class="notice info">${I.info}<div>Con ${p.source === 'tomtom' ? (p.live ? 'el tráfico de ese momento' : 'el tráfico previsto para esa hora') : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.${at}</div></div>`;
   }
 
+  html += pasteBanner() + toldBanner(r);
+
   if (parkingFor(r).length > 1) html += `<div style="text-align:right;margin:-4px 2px 8px"><button class="linkbtn" data-action="park-clear">Quitar todos los aparcamientos</button></div>`;
   for (const p of parkingFor(r)) {
     const names = p.ids.map((id) => r.stops.find((x) => x.id === id)?.name).filter(Boolean);
@@ -431,6 +440,8 @@ function renderPlanning(r) {
   if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
 
   if (portalApp()) html += `<a class="btn gold big block" href="${esc(portalIntent())}" style="margin:14px 0 10px">Traer la ruta del portal</a>`;
+  // Sin APK el marcador hace lo mismo (en Android no: Chrome y Edge no ejecutan marcadores).
+  else if (!isAndroid) html += `<button class="btn gold big block" data-action="open-bring" style="margin:14px 0 10px">Traer la ruta del portal</button>`;
   html += `<div class="actions2">
     <button class="btn ghost" data-action="open-paste">${I.paste}Pegar lista</button>
     <button class="btn ghost" data-action="open-stop">${I.plus}Añadir parada</button>
@@ -541,7 +552,7 @@ function renderActive(r) {
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
       ${parkLine}
-      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${loadChip(cur)}${windowsChips(cur.windows)}${oddChip(cur)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${loadChip(cur)}${toldChip(cur)}${windowsChips(cur.windows)}${oddChip(cur)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
@@ -551,6 +562,7 @@ function renderActive(r) {
       <div class="minor">
         <a class="pill spro" href="${esc(sproUrl())}" data-action="spro" data-keep-default="1">${I.pin}SPRO · ${dumChip(r, cur) ? 'otra vez' : 'aparcar'}</a>
         ${cur.phone ? `<a class="pill" href="tel:${esc(cur.phone.replace(/[^\d+]/g, ''))}">${I.phone}Llamar</a>` : ''}
+        <button class="pill" data-action="open-told" data-id="${esc(cur.id)}">${I.clock}${toldOf(cur) != null ? `Tardaré ${toldOf(cur)} min` : '¿Cuánto tardo?'}</button>
         <button class="pill" data-action="recalc">${I.spark}Recalcular</button>
         ${pendingCount > 1 ? '<button class="pill" data-action="postpone">Dejar para luego</button>' : ''}
         <button class="pill" data-action="edit-stop" data-id="${esc(cur.id)}">Editar</button>
@@ -640,13 +652,197 @@ function renderClients() {
   html += list.map((c) => `<button class="client" data-action="edit-client" data-key="${esc(c.key)}">
       <span class="row between"><span class="name ellipsis">${esc(c.name)}</span>${c.visits ? `<span class="tiny faint">${esc(plural(c.visits, 'visita', 'visitas'))}</span>` : ''}</span>
       <span class="addr ellipsis">${esc(c.label || c.address || 'Sin dirección')}</span>
-      <span class="chips">${windowsChips(c.windows)}${timingChip(c)}${c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
+      <span class="chips">${windowsChips(c.windows)}${timingChip(c)}${toldChip(c)}${toldOf(c) == null && c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
     </button>`).join('');
   return html;
 }
 
-// Traer la ruta del portal sin la APK: el marcador que se guarda como favorito del navegador.
-// Corre dentro del portal, con la sesión del repartidor, así que cada uno saca la suya.
+// ---------- ¿Cuánto crees que tardarás? ----------
+
+// Cada local es un mundo: en Ikebana (Sarrià) aparcar y subir es un infierno y en otros aparcas delante y en
+// 10 minutos has terminado; y además depende de lo que lleves ese día. Eso no hay cuenta que lo adivine, así
+// que la app lo pregunta: lo que digas es el tiempo de la parada entera (aparcar, entrar, entregar y los
+// viajes con la carretilla) y manda sobre lo que calcularía ella (ver service.js). Se guarda en el cliente,
+// así que la próxima vez ya sale puesto y solo hay que cambiarlo si ese día es distinto.
+
+// Paradas pendientes de las que no se sabe cuánto se tarda.
+const pendingTold = (r) => r.stops.filter((x) => !x.done && located(x) && toldOf(x) == null);
+
+function toldBanner(r) {
+  if (!settings().askTold || !r.stops.length) return '';
+  const n = pendingTold(r).length;
+  if (!n) return '';
+  return `<div class="notice info">${I.clock}<div class="grow">Dime cuánto crees que tardarás en ${n === 1 ? 'una parada' : `${n} paradas`} y calculo las horas con tu tiempo, no con el mío.</div>
+    <button class="btn line" data-action="open-told" style="min-height:40px;padding:0 12px">Decirlo</button></div>`;
+}
+
+// Lo que la app sabe de esa parada aparte de lo que digas tú: su cálculo, lo medido y los viajes de hoy.
+function toldAside(x) {
+  const mem = x.name ? store.findClient(x.name) : null;
+  const calc = Math.round(serviceFor({ ...x, told: null }, settings()));
+  const extra = extraTrips(x);
+  const out = [`La app calcularía ${calc} min`];
+  if (mem?.serviceLearned || mem?.parkLearned) {
+    const real = Math.round(serviceFor({ service: mem.service, park: mem.park, load: x.load }, settings()));
+    out.push(`medido aquí: ~${real} min`);
+  }
+  if (extra) out.push(`${extra + 1} viajes con la carretilla (${extra * TRIP_MIN} min de más)`);
+  return out.join(' · ');
+}
+
+function toldRow(x) {
+  const told = toldOf(x);
+  const btn = (v, label) => `<button data-action="told-set" data-id="${esc(x.id)}" data-v="${v}" class="${(told == null ? '' : String(told)) === String(v) ? 'on' : ''}" aria-pressed="${(told == null ? '' : String(told)) === String(v)}">${label}</button>`;
+  return `<li>
+    <b>${esc(x.name || x.address)}</b>
+    <div class="muted small ellipsis">${esc(x.label || x.address || '')}</div>
+    <div class="chips" style="margin:6px 0 0">${loadChip(x)}${windowsChips(x.windows)}</div>
+    <div class="presets" style="margin:8px 0 2px" role="group" aria-label="Minutos en ${esc(x.name || 'la parada')}">
+      ${TOLD_CHOICES.map((m) => btn(m, `${m} min`)).join('')}${btn('', 'Lo calculas tú')}
+    </div>
+    <div class="tiny faint">${esc(toldAside(x))}</div>
+  </li>`;
+}
+
+function sheetTold(sh) {
+  const r = currentRoute();
+  const list = sh.ids.map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
+  if (!list.length) {
+    return `<h2 id="sheet-title">Tiempos de las paradas</h2>
+      <div class="small muted">No queda ninguna parada pendiente.</div>
+      <div class="foot"><button class="btn gold big block" data-action="close">Cerrar</button></div>`;
+  }
+  const one = list.length === 1;
+  return `<h2 id="sheet-title">${one ? `¿Cuánto tardarás en ${esc(list[0].name || list[0].address)}?` : '¿Cuánto crees que tardarás?'}</h2>
+    <div class="small muted" style="margin:-6px 0 12px">Cuenta la parada entera: aparcar, entrar, entregar y los viajes con la carretilla. Con tu tiempo calculo las horas de llegada y el orden; lo que no digas lo calculo yo.</div>
+    <ul class="parsed">${list.map(toldRow).join('')}</ul>
+    <div class="foot">
+      <button class="btn gold big block" data-action="close">${sh.changed ? 'Listo · recalcular' : 'Listo'}</button>
+      ${one ? '' : '<button class="btn ghost block" data-action="told-never">No volver a preguntarme</button>'}
+    </div>`;
+}
+
+// Al traer una ruta nueva se pregunta por las paradas de las que no se sabe nada. Se puede apagar en Ajustes.
+function maybeAskTold() {
+  if (!settings().askTold || ui.sheet || ui.busy) return false;
+  const pend = pendingTold(currentRoute());
+  if (!pend.length) return false;
+  openSheet({ kind: 'told', ids: pend.map((x) => x.id) });
+  return true;
+}
+
+// Lo que dijiste frente a lo que ha sido: así la próxima vez lo dices mejor (y puedes cambiarlo en su ficha).
+function toldGap(cur, doneAt) {
+  const told = toldOf(cur), t = cur.trip;
+  if (told == null || !t) return '';
+  const real = (doneAt - t.since) / 60000 - (t.drive || 0) - (t.wait || 0);
+  if (!(real > 0) || Math.abs(real - told) < 5) return '';
+  return ` · dijiste ${told} min y han sido ${Math.round(real)}`;
+}
+
+// ---------- Traer la ruta del portal sin la APK (iPhone y ordenador) ----------
+
+// La APK de Android lo hace de un toque. Sin ella lo hace el marcador: corre dentro del portal, con la
+// sesión del repartidor (así cada uno saca la suya y la contraseña no sale del navegador) y devuelve la ruta
+// a la app. Guardarlo es el equivalente a instalar la APK: una vez y ya está.
+//
+// En el iPhone hay dos sitios donde vive la app y se tratan distinto, porque iOS aísla los datos de una web
+// instalada y no deja que le entre nada de fuera:
+//   'app'    en Safari: el marcador salta a la app con la ruta dentro, sin pegar nada (como la APK).
+//   'paste'  desde el icono de la pantalla de inicio: el marcador deja la ruta copiada y «Pegar la ruta»
+//            la mete de un toque. Es lo más cerca que se puede estar de la APK con la app instalada.
+const PORTAL_URL = 'https://portal.escoladist.com/Repartos';
+const portalBack = () => {
+  const v = settings().portalBack;
+  return v === 'paste' || v === 'app' ? v : isStandalone ? 'paste' : 'app';
+};
+const bridgeReady = () => !!settings().bridgeReady;
+
+// Que has ido al portal se apunta en el móvil, no solo en memoria: la app instalada del iPhone se cierra
+// sola mientras estás en Safari, y al volver tiene que seguir ofreciéndote pegar la ruta.
+const PASTE_KEY = 'ruta-pegar-pendiente';
+const PASTE_MAX_MIN = 45;
+function waitingPaste(on) {
+  ui.waitingPaste = on ? Date.now() : null;
+  try {
+    if (on) localStorage.setItem(PASTE_KEY, String(ui.waitingPaste));
+    else localStorage.removeItem(PASTE_KEY);
+  } catch { /* sin almacenamiento: solo en memoria */ }
+}
+function restoreWaitingPaste() {
+  try {
+    const at = Number(localStorage.getItem(PASTE_KEY)) || 0;
+    if (at && Date.now() - at < PASTE_MAX_MIN * 60000) ui.waitingPaste = at;
+    else if (at) localStorage.removeItem(PASTE_KEY);
+  } catch { /* sin almacenamiento */ }
+}
+
+// Vuelves del portal y la ruta está copiada: un toque y dentro. Se enseña un rato, no para siempre.
+function pasteBanner() {
+  if (!ui.waitingPaste || Date.now() - ui.waitingPaste > PASTE_MAX_MIN * 60000) return '';
+  return `<div class="notice gold">${I.paste}<div class="grow">¿Ya has tocado tu ruta en el portal? La tienes copiada.</div>
+    <button class="btn line" data-action="paste-route" style="min-height:40px;padding:0 12px">Pegar la ruta</button></div>`;
+}
+
+function bringSteps() {
+  const paste = portalBack() === 'paste';
+  return `<ol><li>Pulsa <b>Abrir el portal</b> y entra con tu usuario (solo la primera vez).</li>
+    <li>${isIOS ? 'Abre los marcadores (el icono del libro) y toca <b>Pasar a Ruta</b>.' : 'Pulsa el marcador <b>Pasar a Ruta</b>.'}</li>
+    <li>Toca tu ruta: ${paste ? 'se copia y, al volver aquí, <b>Pegar la ruta</b> la mete dentro.' : 'Ruta se abre con las paradas dentro.'}</li></ol>`;
+}
+
+// Cómo guardar el marcador, una sola vez. Se esconde cuando ya está guardado.
+function bridgeSetup() {
+  const paste = portalBack() === 'paste';
+  if (!ui.bridgeOpen && bridgeReady()) {
+    return `<button class="btn ghost block" data-action="bridge-open" style="margin-top:12px">Volver a copiar el marcador</button>`;
+  }
+  const pasos = isIOS
+    ? `<ol><li>Pulsa <b>Copiar el marcador</b> (aquí arriba).</li>
+         <li>En <b>Safari</b>, con cualquier página abierta: Compartir → <b>Añadir marcador</b> → Guardar. Llámalo <b>Pasar a Ruta</b>.</li>
+         <li>Abre los marcadores (el icono del libro) → <b>Editar</b> → toca <b>Pasar a Ruta</b>, borra la dirección que tiene y pega ahí el marcador (empieza por <code>javascript:</code>).</li></ol>`
+    : `<ol><li>Pulsa <b>Copiar el marcador</b> (aquí arriba).</li>
+         <li>Enseña la barra de marcadores y crea uno nuevo llamado <b>Pasar a Ruta</b>.</li>
+         <li>Pega el marcador en su dirección (empieza por <code>javascript:</code>).</li></ol>`;
+  const modo = isIOS
+    ? `<div class="field" style="margin:14px 0 8px"><span class="small muted" style="font-weight:500" id="back-label">¿Cómo abres Ruta cada día?</span></div>
+       <div class="seg timing" role="group" aria-labelledby="back-label">
+         <button data-action="portal-back" data-v="paste" class="${paste ? 'on' : ''}" aria-pressed="${paste}">Desde el icono</button>
+         <button data-action="portal-back" data-v="app" class="${paste ? '' : 'on'}" aria-pressed="${!paste}">En Safari</button>
+       </div>
+       <div class="hint">${paste
+         ? 'Desde el icono de la pantalla de inicio iOS no deja que le entre nada de fuera, así que el marcador deja la ruta copiada y la metes con «Pegar la ruta»: dos toques.'
+         : 'En Safari, al tocar tu ruta en el portal se abre Ruta con las paradas dentro, sin pegar nada.'} Si lo cambias, copia el marcador otra vez.</div>`
+    : '';
+  return `<button class="btn gold block" style="margin-top:12px" data-action="copy-bridge">Copiar el marcador</button>
+    <textarea class="input bridge-field" id="bridge-text" readonly spellcheck="false" aria-label="Marcador para el portal">${esc(bridgeLink())}</textarea>
+    ${modo}
+    <div class="key-help">${pasos}</div>
+    <button class="btn line block" data-action="bridge-ready">Ya lo tengo guardado</button>
+    <div class="tiny faint" style="margin-top:10px">${paste
+      ? 'Este marcador solo lee tu ruta y la deja copiada: no lleva nada tuyo dentro.'
+      : 'Este marcador lleva un código propio de este móvil, para que la app sepa que la ruta la traes tú y no te la ha mandado alguien por un enlace. Si cambias de móvil o borras los datos, vuelve aquí y cópialo otra vez.'}</div>`;
+}
+
+// La hoja que lo junta todo: abrir el portal, pegar la ruta y (la primera vez) guardar el marcador.
+function sheetBring() {
+  const esperando = !!ui.waitingPaste;
+  const paste = portalBack() === 'paste';
+  return `<h2 id="sheet-title">Traer la ruta del portal</h2>
+    <div class="small muted" style="margin:-6px 0 14px">Entras en el portal con <b>tu usuario</b> y tocas tu ruta: llega aquí con direcciones, teléfonos, horarios y las cajas de cada pedido. Tu contraseña no sale del navegador.</div>
+    ${bridgeReady() ? '' : `<div class="notice gold">${I.info}<div>La primera vez hay que guardar el marcador ${isIOS ? 'en Safari' : 'en el navegador'}: es lo que en Android hace la APK. Lo tienes abajo y se hace una vez.</div></div>`}
+    <a class="btn ${esperando ? 'line' : 'gold'} big block" href="${esc(PORTAL_URL)}" target="_blank" rel="noopener" data-action="portal-open" data-keep-default="1">${I.go}Abrir el portal</a>
+    <div style="height:10px"></div>
+    <button class="btn ${esperando || paste ? 'gold' : 'line'} big block" data-action="paste-route">${I.paste}Pegar la ruta</button>
+    <div class="key-help" style="margin-top:14px"><b>Cada día:</b>${bringSteps()}</div>
+    <h3 class="section-title" style="margin-top:18px">El marcador</h3>
+    ${bridgeSetup()}
+    <div class="foot">
+      <button class="btn ghost block" data-action="close">Cerrar</button>
+    </div>`;
+}
+
+// En Ajustes solo queda el acceso: lo demás vive en la hoja de arriba.
 function renderBridge() {
   if (portalApp()) return ''; // con la APK ya se trae de un toque
   if (isAndroid) {
@@ -657,36 +853,13 @@ function renderBridge() {
       Mientras tanto, copia la lista en el portal y usa <b>«Pegar lista»</b>, o compártela a Ruta.</div>
   </div>`;
   }
-  const aviso = isIOS && isStandalone
-    ? `<div class="notice warn" style="margin-top:0">${I.warn}<div>Estás usando el icono de la pantalla de inicio. En iPhone nada puede entrar en una app instalada,
-         así que desde aquí la ruta habrá que pegarla a mano. Para que entre sola, abre Ruta <b>en Safari</b> y guarda ahí el marcador.</div></div>`
-    : '';
-  const instalar = isIOS
-    ? `<ol><li>En <b>Safari</b>, con cualquier página abierta: Compartir → <b>Añadir marcador</b> → Guardar. Ponle de nombre <b>Pasar a Ruta</b>.</li>
-         <li>Abre los marcadores (el icono del libro) → <b>Editar</b> → toca <b>Pasar a Ruta</b>.</li>
-         <li>Borra la dirección que tiene y pega ahí el marcador (tiene que empezar por <code>javascript:</code>).</li></ol>`
-    : `<ol><li>Enseña la barra de marcadores del navegador.</li>
-         <li>Crea un marcador nuevo y llámalo <b>Pasar a Ruta</b>.</li>
-         <li>Pega el marcador en su dirección (tiene que empezar por <code>javascript:</code>).</li></ol>`;
-  const usar = isIOS
-    ? `<ol><li>En Safari, entra en <b>portal.escoladist.com</b> con tu usuario (solo la primera vez).</li>
-         <li>Marcadores → <b>Pasar a Ruta</b>.</li>
-         <li>Toca tu ruta: se abre Ruta con las paradas dentro.</li></ol>`
-    : `<ol><li>Entra en <b>portal.escoladist.com</b> con tu usuario.</li>
-         <li>Pulsa el marcador <b>Pasar a Ruta</b>.</li>
-         <li>Elige tu ruta: se abre Ruta con las paradas dentro.</li></ol>`;
   return `
   <h2 class="section-title">Traer la ruta del portal</h2>
   <div class="card">
-    ${aviso}
-    <div class="small muted">Guarda este marcador en tu navegador. Entras en el portal con <b>tu usuario</b> y, al tocarlo, eliges tu ruta:
-      llega aquí sola, con direcciones, teléfonos, horarios y las cajas de cada pedido. Tu contraseña del portal no sale de Safari.</div>
-    <textarea class="input bridge-field" id="bridge-text" readonly spellcheck="false" aria-label="Marcador para el portal">${esc(bridgeLink())}</textarea>
-    <button class="btn line block" data-action="copy-bridge">Copiar el marcador</button>
-    <div class="key-help" style="margin-top:14px"><b>Instalarlo</b> (una vez):${instalar}
-      <div style="margin-top:10px"><b>Cada día:</b></div>${usar}</div>
-    <div class="tiny faint" style="margin-top:12px">Este marcador lleva un código propio de este móvil, para que la app sepa que la ruta la traes tú
-      y no te la ha mandado alguien por un enlace. Si cambias de móvil o borras los datos, vuelve aquí y cópialo otra vez.</div>
+    <div class="small muted">La ruta del portal entra en la app de un toque, con tu usuario: direcciones, teléfonos, horarios y las cajas de cada pedido.
+      ${bridgeReady() ? '' : `La primera vez hay que guardar el marcador ${isIOS ? 'en Safari' : 'en el navegador'}.`}</div>
+    <button class="btn gold block" style="margin-top:12px" data-action="open-bring">Traer la ruta del portal</button>
+    ${isIOS ? `<div class="tiny faint" style="margin-top:10px">Estás ${isStandalone ? 'en la app instalada en la pantalla de inicio' : 'en Safari'}: ${portalBack() === 'paste' ? 'la ruta llega copiada y se mete con «Pegar la ruta»' : 'la ruta entra sola al tocarla en el portal'}.</div>` : ''}
   </div>`;
 }
 
@@ -725,7 +898,8 @@ function renderSettings() {
     <label class="field"><span>Hora de inicio</span><input class="input" type="time" id="set-shift" value="${esc(s.shiftStart)}"></label>
     <label class="field"><span>Minutos de descarga por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${esc(s.service)}"></label>
     <label class="field"><span>Minutos de aparcar por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="0" max="90" id="set-park" value="${esc(s.park)}"></label>
-    <div class="hint">La descarga es lo que se tarda una vez aparcado, con un pedido de una caja. Las cajas van aparte: en la carretilla caben ${TROLLEY_BOXES} (${LOOSE_PER_BOX} botellas sueltas ocupan una caja) y cada viaje de más son ${TRIP_MIN} min. Lo de aparcar varía mucho: súbelo en la ficha de los clientes donde cuesta encontrar hueco.</div>
+    <div class="hint">Esto es lo que calculo cuando no me dices tú cuánto tardas. La descarga es lo que se tarda una vez aparcado, con un pedido de una caja. Las cajas van aparte: en la carretilla caben ${TROLLEY_BOXES} (${LOOSE_PER_BOX} botellas sueltas ocupan una caja) y cada viaje de más son ${TRIP_MIN} min. Lo de aparcar varía mucho: súbelo en la ficha de los clientes donde cuesta encontrar hueco.</div>
+    <label class="toggle"><span>Preguntarme cuánto tardaré en cada parada<span class="tiny faint" style="display:block">${s.askTold ? 'Al traer una ruta te pregunto por las paradas nuevas, y en ruta puedes cambiarlo en cualquier momento. Tu tiempo manda sobre mi cálculo.' : 'Apagado: calculo yo los minutos de cada parada. Puedes decirlos igual en la ficha del cliente o desde la parada.'}</span></span><input type="checkbox" id="set-asktold" ${s.askTold ? 'checked' : ''}></label>
     <label class="toggle"><span>Tener en cuenta los horarios de los clientes<span class="tiny faint" style="display:block">${s.useWindows ? `Con margen: ${LATE_OK_MORNING} min si cierra por la mañana, ${LATE_OK_AFTERNOON} min si cierra a mediodía o más tarde. La app avisa cuando lo usa.` : 'Apagado: el orden sale por cercanía y tráfico. Los horarios se siguen viendo en cada parada.'}</span></span><input type="checkbox" id="set-windows" ${s.useWindows ? 'checked' : ''}></label>
     <label class="toggle"><span>Volver al almacén al acabar<span class="tiny faint" style="display:block">Cuenta el regreso al calcular la ruta</span></span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
     <div class="toggle" style="border:0;padding-bottom:0"><span>Navegar con</span>
@@ -817,6 +991,12 @@ async function requestCloseSheet() {
   syncDraft();
   if (snapshot(sh) !== sh.initial && !(await ask('¿Salir sin guardar los cambios?', { ok: 'Salir' }))) return false;
   if (ui.sheet === sh) closeSheet();
+  // Los tiempos que has dicho se guardan al tocarlos, así que al cerrar solo queda rehacer las horas.
+  if (sh.kind === 'told' && sh.changed && !ui.busy) {
+    const r = currentRoute();
+    if (r.status === 'active') replanActive('Horas con tus tiempos');
+    else if (r.plan) optimize();
+  }
   return true;
 }
 
@@ -832,6 +1012,8 @@ function renderSheet() {
   else if (sh.kind === 'paste') body = sheetPaste(sh);
   else if (sh.kind === 'depot') body = sheetDepot(sh);
   else if (sh.kind === 'reorder') body = sheetReorder(sh);
+  else if (sh.kind === 'told') body = sheetTold(sh);
+  else if (sh.kind === 'bring') body = sheetBring();
   wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1"><div class="grab" aria-hidden="true"></div>${body}</div>`;
   $('.sheet', wrap).scrollTop = scroll;
 }
@@ -890,6 +1072,12 @@ function sheetStop(sh) {
       : d.timing === 'flex' ? `Margen ampliado: hasta ${LATE_OK_MORNING + FLEX_EXTRA} min tarde si cierra por la mañana y ${LATE_OK_AFTERNOON + FLEX_EXTRA} min si cierra a mediodía o más tarde.`
       : `Margen normal: hasta ${LATE_OK_MORNING} min tarde si cierra por la mañana y ${LATE_OK_AFTERNOON} min si cierra a mediodía o más tarde. Siempre te aviso.`}</div>
 
+    <div class="field" style="margin:14px 0 8px"><span class="small muted" style="font-weight:500" id="told-label">¿Cuánto tardas en esta parada?</span></div>
+    <div class="presets" role="group" aria-labelledby="told-label">
+      ${TOLD_CHOICES.map((m) => `<button data-action="told-draft" data-v="${m}" class="${toldOf(d) === m ? 'on' : ''}" aria-pressed="${toldOf(d) === m}">${m} min</button>`).join('')}
+      <button data-action="told-draft" data-v="" class="${toldOf(d) == null ? 'on' : ''}" aria-pressed="${toldOf(d) == null}">Lo calculas tú</button>
+    </div>
+
     <div class="input-row">
       <label class="field" style="flex:1"><span>Descarga (min)</span><input class="input" type="number" inputmode="numeric" id="f-service" value="${esc(d.service ?? settings().service)}" min="1" max="120"></label>
       <label class="field" style="flex:1"><span>Aparcar (min)</span><input class="input" type="number" inputmode="numeric" id="f-park" value="${esc(d.park ?? settings().park)}" min="0" max="120"></label>
@@ -911,14 +1099,20 @@ function serviceHint(sh) {
   const d = sh.draft;
   const mem = d.name && store.findClient(d.name);
   const parts = [];
-  if (mem?.serviceLearned && mem.service === d.service) parts.push(`La descarga está aprendida de tus últimas ${mem.serviceLog.length} entregas aquí.`);
-  if (mem?.parkLearned && mem.park === d.park) parts.push(`Lo de aparcar también: ${mem.park} min de mediana en ${mem.parkLog.length} veces.`);
-  // Lo que de verdad dura la parada: la descarga, aparcar y los viajes de más que salgan por las cajas.
-  // El pedido del día está en la parada de la ruta, no en el borrador de la ficha.
+  // Lo que de verdad dura la parada. El pedido del día está en la parada de la ruta, no en el borrador de la ficha.
   const load = (sh.id && currentRoute().stops.find((x) => x.id === sh.id)?.load) || null;
   const total = serviceFor({ ...d, load }, settings());
   const extra = extraTrips({ load });
-  if (extra) parts.push(`Hoy son ${extra + 1} viajes con la carretilla: ${total} min en total.`);
+  const told = toldOf(d);
+  if (told != null) {
+    parts.push(`Cuento ${told} min en esta parada: lo que has dicho tú.`);
+    parts.push(extra ? `Los ${extra + 1} viajes con la carretilla de hoy van dentro de esos minutos.` : 'Mientras esté puesto, la descarga y lo de aparcar no se usan.');
+    if (mem?.serviceLearned || mem?.parkLearned) parts.push(`Medido aquí: ~${Math.round(serviceFor({ service: mem.service, park: mem.park, load }, settings()))} min.`);
+  } else {
+    if (mem?.serviceLearned && mem.service === d.service) parts.push(`La descarga está aprendida de tus últimas ${mem.serviceLog.length} entregas aquí.`);
+    if (mem?.parkLearned && mem.park === d.park) parts.push(`Lo de aparcar también: ${mem.park} min de mediana en ${mem.parkLog.length} veces.`);
+    if (extra) parts.push(`Hoy son ${extra + 1} viajes con la carretilla: ${total} min en total.`);
+  }
   if (total > DUM_MINUTES) parts.push(`Si aparcas en zona DUM, el máximo son ${DUM_MINUTES} min (60 con vehículo de cero emisiones).`);
   return parts.length ? `<div class="hint">${esc(parts.join(' '))}</div>` : '';
 }
@@ -933,6 +1127,7 @@ function sheetPaste(sh) {
     <div class="small muted" style="margin:-6px 0 12px" id="paste-help">Copia las paradas del portal, de un mensaje o escríbelas tú: una por línea, o separadas por una línea en blanco. Si pones horarios (9:00-11:30, de 10 a 13h…) los leo.</div>
     ${untrustedNotice(sh)}
     <label class="field"><textarea class="input" id="f-paste" aria-label="Lista de paradas" aria-describedby="paste-help" placeholder="Vinos Paco - C/ Major 12, Sant Feliu - 9:00-11:30&#10;Bar La Plaça | Plaça de la Vila 3, Cornellà">${esc(sh.text || '')}</textarea></label>
+    <div class="actions2" style="margin:-4px 0 12px"><button class="btn line" data-action="paste-clip">${I.paste}Pegar lo copiado</button></div>
     ${items ? `<h3 class="section-title" style="margin-top:4px">${items.length === 1 ? '1 parada detectada' : `${items.length} paradas detectadas`}</h3>
       <ul class="parsed">${items.map((it) => {
         const mem = store.findClient(it.name);
@@ -1025,6 +1220,7 @@ function stopDraft(src = {}) {
     lon: located(src) ? src.lon : null,
     label: src.label || '',
     windows: (src.windows || []).map((w) => [...w]),
+    told: toldOf(src),
     service: src.service ?? settings().service,
     park: src.park ?? settings().park,
     timing: src.timing || '',
@@ -1078,6 +1274,7 @@ function fillFromMemory() {
   const d = sh.draft;
   if (!d.address) Object.assign(d, { address: mem.address, lat: located(mem) ? mem.lat : null, lon: located(mem) ? mem.lon : null, label: mem.label || '', needsCheck: !!mem.needsCheck });
   if (!d.windows.length && mem.windows?.length) d.windows = mem.windows.map((w) => [...w]);
+  d.told = d.told ?? toldOf(mem); // lo que dijiste la última vez en este cliente
   d.service = mem.service ?? d.service;
   d.park = mem.park ?? d.park;
   d.timing = d.timing || mem.timing || '';
@@ -1094,7 +1291,8 @@ function stopFields(d) {
   return {
     name: d.name, address: d.address,
     lat: loc ? d.lat : null, lon: loc ? d.lon : null, label: loc ? d.label || '' : '',
-    windows: d.windows, windowsConfirmed: !!d.windowsConfirmed && d.windows.length > 0, service: d.service, park: d.park ?? 0, timing: d.timing || '', phone: d.phone, notes: d.notes,
+    windows: d.windows, windowsConfirmed: !!d.windowsConfirmed && d.windows.length > 0,
+    told: toldOf(d), service: d.service, park: d.park ?? 0, timing: d.timing || '', phone: d.phone, notes: d.notes,
     needsCheck: loc ? !!d.needsCheck : false,
   };
 }
@@ -1317,6 +1515,7 @@ async function finishCurrent() {
   const mem = store.findClient(cur.name);
   if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
   learnFrom(cur, cur.doneAt);
+  const gap = toldGap(cur, cur.doneAt);
   delete cur.trip;
   // Con un aparcamiento, la validación de SPRO sigue valiendo mientras quede alguna entrega suya.
   const park = parkingOf(r, cur.id);
@@ -1327,7 +1526,7 @@ async function finishCurrent() {
   await replanActive(null);
   const r2 = currentRoute();
   const next = r2.stops.find((x) => x.id === r2.current);
-  const what = `Hecha: ${cur.name}`;
+  const what = `Hecha: ${cur.name}${gap}`;
   toast(next && r2.status === 'active' ? `${what} · siguiente: ${next.name}` : what, 6000, { label: 'Deshacer', fn: () => undoLast() });
 }
 
@@ -1350,7 +1549,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['open-reorder', 'reorder-save', 'order-auto', 'next', 'parked', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
+const BLOCKED_WHILE_BUSY = new Set(['open-reorder', 'reorder-save', 'order-auto', 'next', 'parked', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map', 'open-told', 'told-set', 'open-bring', 'paste-route']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1419,6 +1618,48 @@ const actions = {
     if (c) openSheet({ kind: 'stop', mode: 'client', key: c.key, draft: stopDraft(c) });
   },
   'open-paste': () => openSheet({ kind: 'paste', text: '' }),
+  // Traer la ruta del portal sin APK: abrir el portal, pegar lo que ha dejado el marcador y guardarlo.
+  'open-bring': () => openSheet({ kind: 'bring' }),
+  'portal-open': () => { waitingPaste(true); setTimeout(renderSheet, 600); },
+  'paste-route': () => pasteFromClipboard(),
+  'bridge-open': () => { ui.bridgeOpen = true; render(); },
+  'bridge-ready': () => { ui.bridgeOpen = false; store.setSettings({ bridgeReady: true }); render(); toast('Marcador guardado. Ya puedes traer la ruta del portal'); },
+  'portal-back': (el) => { store.setSettings({ portalBack: el.dataset.v === 'paste' ? 'paste' : 'app' }); ui.bridgeOpen = true; render(); },
+  'paste-clip': async () => {
+    const sh = ui.sheet;
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch { return toast('Mantén el dedo en el cuadro y elige «Pegar»', 4000); }
+    if (!String(text).trim()) return toast('No hay nada copiado');
+    if (ui.sheet !== sh) return;
+    sh.text = String(text).slice(0, 100000);
+    renderSheet();
+    actions['paste-read']();
+  },
+  // ¿Cuánto crees que tardarás? Lo que digas se guarda en la parada y en el cliente, para la próxima vez.
+  'open-told': (el) => {
+    const r = currentRoute();
+    const ids = el.dataset.id ? [el.dataset.id] : r.stops.filter((x) => !x.done && located(x)).map((x) => x.id);
+    if (!ids.length) return toast('No hay paradas pendientes');
+    if (ui.sheet) closeSheet();
+    openSheet({ kind: 'told', ids });
+  },
+  'told-set': (el) => {
+    const r = currentRoute();
+    const x = r.stops.find((st) => st.id === el.dataset.id);
+    if (!x) return;
+    const v = el.dataset.v ? Math.min(TOLD_MAX, Math.max(TOLD_MIN, parseInt(el.dataset.v, 10) || 0)) : null;
+    x.told = v;
+    // El cliente se lo queda: la próxima vez ya sale puesto (las paradas de práctica no cuentan).
+    if (!x.demo && x.name) store.rememberClient({ name: x.name, told: v });
+    store.save();
+    if (ui.sheet?.kind === 'told') { ui.sheet.changed = true; renderSheet(); } else render();
+  },
+  'told-draft': (el) => {
+    syncDraft();
+    ui.sheet.draft.told = el.dataset.v ? Math.min(TOLD_MAX, Math.max(TOLD_MIN, parseInt(el.dataset.v, 10) || 0)) : null;
+    renderSheet();
+  },
+  'told-never': () => { store.setSettings({ askTold: false }); if (ui.sheet) closeSheet(); render(); toast('No preguntaré más. Se vuelve a encender en Ajustes'); },
   'paste-read': () => {
     syncDraft();
     const portal = parsePortal(ui.sheet.text);
@@ -1490,7 +1731,7 @@ const actions = {
   export: () => exportClients(),
   'export-config': () => exportConfig(),
   'copy-bridge': async () => {
-    const el = $('#bridge-text');
+    const el = $('#sheet #bridge-text') || $('#bridge-text');
     if (el) { el.focus(); el.setSelectionRange(0, el.value.length); }
     try { await navigator.clipboard.writeText(bridgeLink()); toast('Marcador copiado ✓'); }
     catch { toast('Mantén el dedo sobre el texto y elige «Copiar»', 5000); }
@@ -1587,8 +1828,9 @@ async function pasteAdd() {
   closeSheet();
   const added = items.length === 1 ? '1 parada añadida' : `${items.length} paradas añadidas`;
   toast(unlocated ? `${added} · ${unlocated} sin ubicar` : added);
-  if (r.status === 'active') return replanActive(null);
+  if (r.status === 'active') { await replanActive(null); maybeAskTold(); return; }
   if (r.stops.some(located)) await optimize(); else render();
+  maybeAskTold();
 }
 
 const PROBE = [{ lat: 41.372083, lon: 2.077356 }, { lat: 41.3756, lon: 2.1316 }]; // almacén → Carrer de Sants
@@ -1709,6 +1951,7 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-shift') store.setSettings({ shiftStart: t.value || '07:30' });
   if (t.id === 'set-service') store.setSettings({ service: Math.min(180, Math.max(1, parseInt(t.value, 10) || 12)) });
   if (t.id === 'set-park') store.setSettings({ park: Math.min(120, Math.max(0, parseInt(t.value, 10) || 0)) });
+  if (t.id === 'set-asktold') { store.setSettings({ askTold: t.checked }); render(); }
   if (t.id === 'set-return') store.setSettings({ returnToDepot: t.checked });
   if (t.id === 'set-windows') { store.setSettings({ useWindows: t.checked }); render(); }
   if (t.id === 'set-key') store.setSettings({ tomtomKey: t.value.trim() });
@@ -1786,10 +2029,33 @@ function portalIntent() {
   return `intent://portal#Intent;scheme=rutaescola;package=com.flixescola.ruta;S.n=${portalNonce()};end`;
 }
 
-// El marcador para Safari (iPhone) y para el navegador del ordenador: lleva la dirección de esta misma
-// web y el código, así que al elegir la ruta vuelve aquí sola y verificada.
+// El marcador para Safari (iPhone) y para el navegador del ordenador. En modo 'app' lleva la dirección de
+// esta web y el código, así que al elegir la ruta vuelve aquí sola y verificada; en modo 'paste' (la app
+// instalada en el iPhone, que no puede recibir nada) la deja copiada y se mete con «Pegar la ruta».
 function bridgeLink() {
-  return bridgeUrl({ app: location.origin + location.pathname.replace(/[^/]*$/, ''), nonce: portalNonce() });
+  return bridgeUrl({
+    app: location.origin + location.pathname.replace(/[^/]*$/, ''),
+    nonce: portalNonce(),
+    paste: portalBack() === 'paste',
+  });
+}
+
+// Pegar de un toque la ruta que el marcador ha dejado copiada. readText() tiene que salir del mismo toque
+// del dedo (en el iPhone sale un botón «Pegar» que lo confirma), así que no se espera nada antes.
+async function pasteFromClipboard() {
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    toast('Este navegador no me deja leer lo copiado: usa «Pegar lista» y pega ahí con el dedo', 6000);
+    return;
+  }
+  text = String(text || '').trim();
+  if (!text) return toast('No hay nada copiado. Vuelve al portal y toca tu ruta.', 5000);
+  if (!parsePortal(text) && !parseList(text).length) return toast('Lo copiado no es una ruta ni una lista de paradas', 5000);
+  waitingPaste(false);
+  // La has pegado tú en tu propia app: va sin el aviso de «esto ha llegado por un enlace».
+  receive({ text: text.slice(0, 100000), trusted: true });
 }
 
 function portalApp() {
@@ -1832,6 +2098,7 @@ function receive({ text, trusted }) {
 store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();
+restoreWaitingPaste();
 const first = incoming();
 render();
 receive(first);

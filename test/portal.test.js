@@ -237,3 +237,19 @@ test('factura: devoluciones, contactos con teléfono y dónde entregar se quedan
   assert.equal(f(h), 'TEL. 93 000 00 00');
   assert.equal(f(i), 'Pau Director (+34600112233)'); // el teléfono va en la línea de debajo del nombre
 });
+
+test('el marcador deja la ruta copiada, y en modo «pegar» no lleva dirección ni código', () => {
+  // Siempre copia: desde la app instalada del iPhone es la única manera de que la ruta entre.
+  const code = decodeURIComponent(bridgeUrl({ app: APP, nonce: NONCE }).slice('javascript:'.length));
+  assert.match(code, /navigator\.clipboard\.writeText/);
+  assert.match(code, /Pegar la ruta/);
+  // Modo «pegar» (la app en la pantalla de inicio): sin dirección a la que saltar y sin código dentro.
+  const pegar = bridgeUrl({ app: APP, nonce: NONCE, paste: true });
+  assert.match(pegar, /\}\)\(\)$/);
+  assert.ok(!pegar.includes(NONCE));
+  assert.equal(pegar, bridgeUrl({ paste: true }));
+  // Y sigue cabiendo en un favorito (Edge de Android corta hacia los 5.000 caracteres).
+  for (const url of [pegar, bridgeUrl({ app: APP, nonce: NONCE })]) {
+    assert.ok(url.length + (url.match(/ /g) || []).length * 2 < 4200, `marcador de ${url.length} caracteres`);
+  }
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { serviceFor, unloadFrom, extraTrips, measure, TRIP_MIN, DEFAULT_SERVICE } from '../js/service.js';
+import { serviceFor, stopParts, unloadFrom, extraTrips, measure, toldOf, TRIP_MIN, DEFAULT_SERVICE } from '../js/service.js';
 import { TROLLEY_BOXES, LOOSE_PER_BOX } from '../js/parking.js';
 
 const stop = (boxes, loose = 0, rest = {}) => ({ load: { boxes, loose, bottles: boxes * 6 + loose }, ...rest });
@@ -79,4 +79,47 @@ test('las muestras raras se tiran en vez de aprenderlas', () => {
   // Horas que faltan o que van al revés
   assert.deepEqual(measure({ leftAt: t(9, 0), doneAt: t(9, 20), stop: stop(1) }), { unload: null, park: null });
   assert.equal(measure({ leftAt: t(9, 0), parkedAt: t(9, 30), doneAt: t(9, 10), stop: stop(1) }).unload, null);
+});
+
+// ---------- Lo que dice el repartidor ----------
+
+test('lo que dices tú es el tiempo de la parada, y manda sobre el cálculo', () => {
+  // Ikebana (Sarrià) es un infierno de aparcar: dices 45 y son 45, no 12 + lo que la app crea.
+  assert.equal(serviceFor(stop(1, 0, { told: 45 })), 45);
+  // Y el local donde aparcas delante y sales en 10, aunque la app le hubiera puesto 12 + aparcar.
+  assert.equal(serviceFor(stop(1, 0, { told: 10, service: 20, park: 15 })), 10);
+  // Los valores por defecto de Ajustes tampoco se suman por detrás.
+  assert.equal(serviceFor(stop(1, 0, { told: 20 }), { service: 30, park: 10 }), 20);
+  // Sin decir nada, todo sigue como estaba.
+  assert.equal(serviceFor(stop(1)), DEFAULT_SERVICE);
+  assert.equal(serviceFor(stop(1, 0, { told: null })), DEFAULT_SERVICE);
+});
+
+test('los viajes con la carretilla van dentro de lo que has dicho, no encima', () => {
+  // 25 cajas son 3 viajes (20 min de más), pero si dices 40 min la parada son 40, no 60.
+  assert.equal(serviceFor(stop(25, 0, { told: 40 })), 40);
+  const partes = stopParts(stop(25, 0, { told: 40 }));
+  assert.deepEqual(partes, { unload: 20, park: 0, tripsMin: 2 * TRIP_MIN, told: 40 });
+  // Si dices menos de lo que duran los viajes, queda el mínimo de descarga: no se devuelve nada negativo.
+  assert.equal(stopParts(stop(25, 0, { told: 5 })).unload, 1);
+  assert.equal(serviceFor(stop(25, 0, { told: 5 })), 1 + 2 * TRIP_MIN);
+});
+
+test('un tiempo imposible no se usa: se vuelve al cálculo de siempre', () => {
+  for (const told of [0, -5, 'mucho', 1000, NaN, true, undefined]) {
+    assert.equal(toldOf({ told }), null, `told = ${told}`);
+    assert.equal(serviceFor(stop(1, 0, { told })), DEFAULT_SERVICE);
+  }
+  assert.equal(toldOf({ told: 1 }), 1);
+  assert.equal(toldOf({ told: 180 }), 180);
+  assert.equal(toldOf(null), null);
+});
+
+test('aparcar no se cobra dos veces cuando lo has dicho tú', () => {
+  // El planificador reparte «park» entre las entregas del mismo aparcamiento: con tu tiempo no hay nada que
+  // repartir (va dentro), así que un grupo de tres no se lleva tres veces lo de aparcar.
+  const { park } = stopParts(stop(1, 0, { told: 30, park: 12 }));
+  assert.equal(park, 0);
+  // Y al aprender de una parada así, lo medido no arrastra un «aparcar» que no se ha usado.
+  assert.equal(unloadFrom(30, stop(1, 0, { told: 30, park: 12 })), 30);
 });

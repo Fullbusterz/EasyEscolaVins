@@ -115,3 +115,33 @@ test('pasar configuración: almacén y horario, nunca las claves; al importar so
   assert.notEqual(store.settings().nav, 'javascript:');
   assert.ok(store.settings().service <= 180);
 });
+
+test('lo que dices que tardas se guarda en el cliente y se sanea', () => {
+  store.rememberClient({ name: 'Ikebana', told: 45 });
+  assert.equal(store.findClient('ikebana').told, 45);
+  // Se puede quitar: vuelve a mandar el cálculo de la app.
+  store.rememberClient({ name: 'Ikebana', told: null });
+  assert.equal(store.findClient('ikebana').told, null);
+  // De un archivo solo entran minutos con sentido.
+  store.importClients(JSON.stringify({ clients: {
+    a: { name: 'Raro 1', told: '"><img src=x>', updatedAt: Date.now() },
+    b: { name: 'Raro 2', told: 999, updatedAt: Date.now() },
+    c: { name: 'Raro 3', told: 0, updatedAt: Date.now() },
+    d: { name: 'Bueno', told: 30, updatedAt: Date.now() },
+  } }));
+  assert.equal(store.findClient('raro 1').told, null);
+  assert.equal(store.findClient('raro 2').told, null);
+  assert.equal(store.findClient('raro 3').told, null);
+  assert.equal(store.findClient('bueno').told, 30);
+});
+
+test('preguntar los tiempos viene encendido y se pasa a un compañero', () => {
+  assert.equal(store.settings().askTold, true);
+  store.setSettings({ askTold: false });
+  const cfg = JSON.parse(store.exportConfig());
+  assert.equal(cfg.settings.askTold, false);
+  store.applyConfig({ askTold: true });
+  assert.equal(store.settings().askTold, true);
+  store.applyConfig({ askTold: 'sí' }); // valor raro: no toca lo que había
+  assert.equal(store.settings().askTold, true);
+});
