@@ -414,6 +414,14 @@ body.map-open { overflow: hidden; }
 
 /* Pedido grande (+70 botellas o +30 cajas) */
 .chip.big { background: var(--gold); color: var(--gold-ink); font-weight: 700; white-space: normal; }
+
+/* Lo que ha dicho el repartidor que tarda en esa parada: manda sobre lo que calcularía la app. */
+.chip.told { background: rgba(43, 100, 70, 0.3); color: var(--forest-ink); border: 1px solid rgba(159, 209, 178, 0.22); }
+.chip.told svg { width: 13px; height: 13px; }
+/* Los minutos que se eligen de un toque (en la ficha y al preguntar por la ruta). */
+.presets button.on { border-color: var(--gold); background: rgba(201, 165, 76, 0.14); color: var(--gold-2); font-weight: 600; }
+.parsed .presets { margin-bottom: 0; }
+.parsed .presets button { min-height: 38px; padding: 0 11px; font-size: 13px; }
 .big-ink { color: var(--gold-2); }
 .leaflet-marker-icon.pin.big { width: 36px !important; height: 36px !important; margin-left: -18px !important; margin-top: -18px !important; border: 3px solid #fff; font-size: 15px; }
 

@@ -181,8 +181,12 @@ export function parsePortal(text) {
     // Las APK anteriores a la 1.4.0 no mandan la carga: entonces la parada queda sin ella.
     if (row.length >= 14) {
       const n = (v) => (Number.isFinite(+v) && +v > 0 ? Math.min(+v, 10000) : 0);
-      const l = g.load || { boxes: 0, bottles: 0, loose: 0 };
+      const l = g.load || { boxes: 0, big: 0, bottles: 0, loose: 0 };
       l.boxes += n(c2) + n(c35) + n(c611) + n(c12);
+      // Cajas grandes: las de los dos tramos de arriba del portal (de 6 a 11 y de 12 o más). El portal no
+      // dice cuántas botellas lleva cada caja, solo en qué tramo cae, así que esta es la única raya que se
+      // puede trazar: una caja de 6 y una de 11 vienen en el mismo saco.
+      l.big += n(c611) + n(c12);
       l.loose += n(loose);
       l.bottles += n(loose) + 2 * n(c2) + 4 * n(c35) + 6 * n(c611) + 12 * n(c12);
       g.load = l;
@@ -256,7 +260,13 @@ export function parsePortal(text) {
 //
 // `app` es la dirección de esta web y `n` el código que solo conoce este móvil. Con los dos, al elegir
 // una ruta el marcador salta a la app con «#portal=…&n=…» y la ruta entra verificada, igual que con la
-// APK: sin copiar ni pegar. Sin ellos (marcador genérico) se comparte o se copia, como antes.
+// APK: sin copiar ni pegar.
+//
+// Sin `app` (marcador «para el icono», ver bridgeUrl) no se salta a ningún sitio: la ruta se queda en el
+// portapapeles. Es lo que hace falta en el iPhone con la app instalada en la pantalla de inicio, porque iOS
+// aísla sus datos y no deja que le entre nada de fuera; desde la app, «Pegar la ruta» la mete de un toque.
+// De hecho se copia siempre, aunque además se salte: así, si el marcador no es el que toca, la ruta no se
+// pierde y se puede pegar.
 function bridge(app, n) {
   const q = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => '&#' + c.charCodeAt(0) + ';');
   let box = document.getElementById('ruta-puente');
@@ -283,14 +293,18 @@ function bridge(app, n) {
         paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden, p.botellas, p.cajas_2, p.cajas_3a5, p.cajas_6a11, p.cajas_12mas]) })]);
     }
     say(routes.map((r, i) => '<button data-i=' + i + ' style="display:block;width:100%;margin:8px 0;padding:14px;border:0;border-radius:12px;background:#c9a54c;font-weight:700">Ruta del ' + q(r[0]) + ' · ' + r[1] + ' paradas</button>').join('')
-      + (app ? 'Al tocarla se abre Ruta con la ruta dentro.' : 'Al compartir, elige <b>Ruta</b>.'));
+      + (app ? 'Al tocarla se abre Ruta con la ruta dentro.' : 'Al tocarla se copia: abre <b>Ruta</b> y pulsa <b>Pegar la ruta</b>.'));
     box.querySelectorAll('[data-i]').forEach((b) => {
       b.onclick = async () => {
         const t = routes[b.dataset.i][2], m = box.querySelector('[data-m]');
+        m.textContent = 'Un momento…';
+        let copiada = false;
+        try { await navigator.clipboard.writeText(t); copiada = true; } catch (err) { /* el navegador no deja copiar */ }
         const to = app && app + '#portal=' + encodeURIComponent(t) + (n ? '&n=' + n : '');
         if (to && to.length < 60000) { m.textContent = 'Abriendo Ruta…'; location.href = to; return; }
+        if (copiada) { m.innerHTML = 'Copiada ✓ Abre <b>Ruta</b> y pulsa <b>Pegar la ruta</b>.'; return; }
         try { return await navigator.share({ title: 'Ruta', text: t }); } catch (err) { if (err.name === 'AbortError') return; }
-        try { await navigator.clipboard.writeText(t); m.innerHTML = 'Copiada. En la app: <b>Pegar lista</b>, pega y <b>Leer lista</b>.'; } catch { m.textContent = 'No he podido compartirla ni copiarla.'; }
+        m.textContent = 'No he podido copiarla ni compartirla.';
       };
     });
   }).catch((err) => say('No he podido leer la ruta (' + q(err.message) + '). ¿Has iniciado sesión?'));
@@ -319,10 +333,12 @@ const safe = (v, re) => (re.test(String(v || '')) ? `'${v}'` : '');
 
 /**
  * El marcador para guardar como favorito.
- * Con `app` (la dirección de esta web) y `nonce`, la ruta vuelve sola y verificada; sin ellos, se comparte.
+ * Con `app` (la dirección de esta web) y `nonce`, la ruta vuelve sola y verificada a la app del navegador.
+ * Con `paste` no se le pone dirección: la ruta se queda copiada y se pega en la app (iPhone con la app
+ * instalada en la pantalla de inicio, que no puede recibir nada de fuera).
  */
-export function bridgeUrl({ app = '', nonce = '' } = {}) {
-  const a = safe(app, /^https:\/\/[\w.-]+(:\d+)?(\/[\w./-]*)?$/);
+export function bridgeUrl({ app = '', nonce = '', paste = false } = {}) {
+  const a = paste ? '' : safe(app, /^https:\/\/[\w.-]+(:\d+)?(\/[\w./-]*)?$/);
   const n = a && safe(nonce, /^[0-9a-f-]{36}$/i); // sin dirección a la que volver, el código no pinta nada
   return pack(`(${bridge.toString()})(${[a, n].filter(Boolean).join(',')})`);
 }

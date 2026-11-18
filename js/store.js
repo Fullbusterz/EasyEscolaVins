@@ -21,6 +21,8 @@ const empty = () => ({
     // y lo que cuesta aparcar en cada sitio van aparte; ver service.js.
     service: 12,
     park: 0,
+    // Preguntar por parada cuánto crees que vas a tardar (lo que dices manda sobre el cálculo; ver service.js).
+    askTold: true,
     returnToDepot: true,
     // Horarios de entrega de los clientes al ordenar la ruta (con margen, ver hours.js). Se apagan en Ajustes.
     useWindows: true,
@@ -29,7 +31,7 @@ const empty = () => ({
     nav: 'waze',
     leaveIn: 10,
   },
-  clients: {}, // clave normalizada -> { key, name, address, lat, lon, label, windows, service, park, phone, notes, visits, updatedAt }
+  clients: {}, // clave normalizada -> { key, name, address, lat, lon, label, windows, told, service, park, phone, notes, visits, updatedAt }
   routes: {}, // 'YYYY-MM-DD' -> { date, stops: [...], plan, status, pairs, history }
 });
 
@@ -138,6 +140,8 @@ export function sanitizeClient(c) {
     lon: located ? lon : null,
     label: str(c.label),
     windows: cleanWindows(c.windows),
+    // Lo que has dicho que se tarda en esta parada, de punta a punta. Si está, manda sobre todo lo demás.
+    told: int(c.told, 1, 180, 0) || null,
     service: int(c.service, 1, 180, 12),
     // Lo que cuesta encontrar sitio donde aparcar en este cliente. Se pone a mano: varía demasiado.
     park: int(c.park, 0, 120, 0),
@@ -256,10 +260,10 @@ export function isoDate(d = new Date()) {
 
 // Configuración para un compañero: almacén, jornada y clientes. Nunca las claves: cada uno pone la suya.
 export function exportConfig() {
-  const { depot, shiftStart, service, park, returnToDepot, nav } = state.settings;
+  const { depot, shiftStart, service, park, askTold, returnToDepot, nav } = state.settings;
   return JSON.stringify({
     app: 'ruta-escola', kind: 'config', version: 5, exportedAt: new Date().toISOString(),
-    settings: { depot, shiftStart, service, park, returnToDepot, nav }, clients: state.clients,
+    settings: { depot, shiftStart, service, park, askTold, returnToDepot, nav }, clients: state.clients,
   });
 }
 
@@ -274,6 +278,7 @@ export function applyConfig(cfg) {
   if (typeof cfg.shiftStart === 'string' && /^\d{2}:\d{2}$/.test(cfg.shiftStart)) { patch.shiftStart = cfg.shiftStart; applied.push('hora de inicio'); }
   if (cfg.service != null) patch.service = int(cfg.service, 1, 180, state.settings.service);
   if (cfg.park != null) patch.park = int(cfg.park, 0, 120, state.settings.park);
+  if (typeof cfg.askTold === 'boolean') patch.askTold = cfg.askTold;
   if (typeof cfg.returnToDepot === 'boolean') patch.returnToDepot = cfg.returnToDepot;
   if (cfg.nav === 'waze' || cfg.nav === 'gmaps') patch.nav = cfg.nav;
   setSettings(patch);
@@ -306,7 +311,7 @@ function importRoutes(routes) {
       if (!c || typeof x.id !== 'string') return null;
       return {
         id: x.id.slice(0, 40), name: c.name, address: c.address, lat: c.lat, lon: c.lon, label: c.label, windows: c.windows,
-        service: c.service, phone: c.phone, notes: c.notes, needsCheck: c.needsCheck,
+        told: c.told, service: c.service, park: c.park, phone: c.phone, notes: c.notes, needsCheck: c.needsCheck,
         done: !!x.done, doneAt: x.done ? int(x.doneAt, 0, Number.MAX_SAFE_INTEGER, 0) : undefined,
         failed: x.failed ? str(x.failed, 60) : undefined,
       };
