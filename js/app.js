@@ -10,7 +10,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.18.0';
+export const VERSION = '1.18.1';
 
 // ---------- Utilidades ----------
 
@@ -76,6 +76,7 @@ const ui = {
   update: null, // service worker nuevo esperando
   waitingPaste: null, // se ha abierto el portal: al volver, la ruta está copiada y se pega de un toque
   bridgeOpen: false, // enseñar otra vez cómo guardar el marcador
+  picking: false, // selector de archivos abierto: al volver de él no se redibuja (ver 'visibilitychange')
 };
 
 function toast(msg, ms = 2600, action = null) {
@@ -2002,7 +2003,7 @@ document.addEventListener('change', (e) => {
       } catch (err) {
         toast(/grande/.test(err.message) ? 'El archivo es demasiado grande' : 'Ese archivo no es de la app Ruta');
       }
-    });
+    }).catch(() => { t.value = ''; toast('No se ha podido leer el archivo'); });
   }
 });
 
@@ -2022,8 +2023,18 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.id === 'f-address') { e.preventDefault(); searchAddress(); }
 });
 
+// En Android el selector de archivos tapa la página. Al volver, 'visibilitychange' llega ANTES que el
+// 'change' del <input>; si en ese momento se redibuja, el <input> sale del DOM, su 'change' ya no sube a
+// document y la importación no hace nada, sin aviso (visto en un Xiaomi el 19/11/2026). Así que la vuelta
+// del selector no redibuja.
+document.addEventListener('click', (e) => { if (e.target.id === 'import-file') ui.picking = true; }, true);
+
 // Al volver a la app (p. ej. desde Waze), refresca horas y estado.
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.sheet && !ui.busy) render(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (ui.picking) { ui.picking = false; return; }
+  if (!ui.sheet && !ui.busy) render();
+});
 
 // La cuenta atrás de la zona DUM se actualiza cada 20 s sin redibujar la pantalla.
 setInterval(() => {
