@@ -10,7 +10,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.18.1';
+export const VERSION = '1.18.2';
 
 // ---------- Utilidades ----------
 
@@ -777,7 +777,7 @@ function toldGap(cur, doneAt) {
 //   'app'    en Safari: el marcador salta a la app con la ruta dentro, sin pegar nada (como la APK).
 //   'paste'  desde el icono de la pantalla de inicio: el marcador deja la ruta copiada y «Pegar la ruta»
 //            la mete de un toque. Es lo más cerca que se puede estar de la APK con la app instalada.
-const PORTAL_URL = 'https://portal.escoladist.com/Repartos';
+const PORTAL_URL = 'https://portal.escoladist.com/Repartos/Index'; // sin /Index el portal da 404
 const portalBack = () => {
   const v = settings().portalBack;
   return v === 'paste' || v === 'app' ? v : isStandalone ? 'paste' : 'app';
