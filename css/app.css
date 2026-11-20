@@ -387,8 +387,10 @@ textarea.input.notes-field { min-height: 0; font-size: inherit; }
 .section-head .section-title { margin: 0; }
 .btn.small { min-height: 38px; padding: 0 14px; font-size: 14px; }
 .btn.small svg { width: 17px; height: 17px; }
-#mapview { position: fixed; inset: 0; z-index: 15; display: flex; flex-direction: column; background: var(--bg); }
-#mapview[hidden] { display: none; }
+#mapview, #pickview { position: fixed; inset: 0; z-index: 15; display: flex; flex-direction: column; background: var(--bg); }
+#pickview { z-index: 25; } /* encima de la ficha del cliente, que sigue abierta debajo */
+#mapview[hidden], #pickview[hidden] { display: none; }
+#pickmap { flex: 1; min-height: 0; background: #20241f; cursor: crosshair; }
 body.map-open { overflow: hidden; }
 .map-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: calc(8px + var(--safe-t, 0px)) 12px 8px 18px; }
 .map-top h2 { margin: 0; font: 600 22px/1.1 var(--serif); color: var(--gold-2); }
@@ -407,6 +409,16 @@ body.map-open { overflow: hidden; }
 .pin.depot { background: #0a0b0a; color: var(--gold-2); border-color: var(--gold); }
 .pin.park { border-radius: 8px; background: #0a0b0a; color: var(--gold-2); border-color: var(--forest-ink); font-size: 15px; }
 .pin.park.new { border-color: var(--gold); box-shadow: 0 0 0 4px rgba(201, 165, 76, 0.4); cursor: grab; }
+.pin.addr { background: #0a0b0a; color: #e9e9e4; border-color: #6b6f68; }
+.pin.entry { background: var(--gold); color: var(--gold-ink); font-size: 15px; box-shadow: 0 0 0 4px rgba(201, 165, 76, 0.4), 0 2px 6px rgba(0, 0, 0, 0.45); cursor: grab; }
+/* Por dónde se entra (ficha del cliente) */
+.chip.entry { background: rgba(201, 165, 76, 0.14); color: var(--gold-2); border: 1px solid rgba(201, 165, 76, 0.3); white-space: normal; }
+.chip.entry svg { width: 13px; height: 13px; }
+.entry-box { border: 1px solid rgba(201, 165, 76, 0.3); background: rgba(201, 165, 76, 0.06); border-radius: 14px; padding: 12px 12px 4px; margin: -4px 0 16px; }
+.entry-box .entry-head { display: flex; gap: 6px; align-items: center; font-size: 14px; color: var(--gold-2); margin-bottom: 10px; }
+.entry-box .entry-head svg { width: 16px; height: 16px; flex: none; }
+.entry-box .field { margin-bottom: 10px; }
+.entry-add { margin: -4px 0 16px; }
 .leaflet-popup-content { font: 14px/1.45 var(--sans); }
 .leaflet-popup-content .muted { color: #666; }
 .pop-actions { margin-top: 8px; }

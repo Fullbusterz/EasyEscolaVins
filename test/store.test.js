@@ -145,3 +145,31 @@ test('preguntar los tiempos viene encendido y se pasa a un compañero', () => {
   store.applyConfig({ askTold: 'sí' }); // valor raro: no toca lo que había
   assert.equal(store.settings().askTold, true);
 });
+
+test('el punto de entrada viaja con el cliente (pasar configuración y copia) y se sanea al importar', () => {
+  const shop = { lat: 41.38, lon: 2.09 };
+  const ramp = { lat: 41.38, lon: 2.0918, note: 'Rampa c/ Girona' };
+  store.rememberClient({ name: 'Bodega Rampa', address: 'C/ Major 3', ...shop, entry: ramp });
+  const cfg = JSON.parse(store.exportConfig());
+  const sent = Object.values(cfg.clients).find((c) => c.name === 'Bodega Rampa');
+  assert.deepEqual(sent.entry, ramp);
+  store.forgetClient('bodega rampa');
+  store.importClients(JSON.stringify({ clients: cfg.clients }));
+  assert.deepEqual(store.findClient('bodega rampa').entry, ramp);
+  // Manipulado o lejos de la dirección: no entra.
+  store.importClients(JSON.stringify({ clients: {
+    a: { name: 'Entrada Lejos', ...shop, entry: { lat: 41.40, lon: 2.09 }, updatedAt: Date.now() },
+    b: { name: 'Entrada Rara', ...shop, entry: { lat: '41.38', lon: 2.0918, note: '<b>' }, updatedAt: Date.now() },
+    c: { name: 'Entrada Sin Dirección', entry: ramp, updatedAt: Date.now() },
+  } }));
+  assert.equal(store.findClient('entrada lejos').entry, null);
+  assert.equal(store.findClient('entrada rara').entry, null);
+  assert.equal(store.findClient('entrada sin dirección').entry, null);
+  // Y en los días de una copia de seguridad, las paradas conservan su punto de entrada.
+  const r = store.route('2099-11-02');
+  r.stops.push({ id: 'e1', name: 'Bodega Rampa', ...shop, entry: ramp, windows: [], service: 10, done: false });
+  const json = store.exportBackup();
+  delete store.db().routes['2099-11-02'];
+  store.importClients(json);
+  assert.deepEqual(store.route('2099-11-02').stops[0].entry, ramp);
+});
