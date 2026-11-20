@@ -1,6 +1,7 @@
 // Todo se guarda en el propio móvil (localStorage): ajustes, clientes recordados y rutas por día.
 
 import { clientKey } from './parse.js';
+import { cleanEntry } from './entry.js';
 
 const KEY = 'ruta-escola-v1';
 const MAX_IMPORT_BYTES = 3_000_000; // una copia completa con 3 semanas de rutas cabe de sobra
@@ -31,7 +32,7 @@ const empty = () => ({
     nav: 'waze',
     leaveIn: 10,
   },
-  clients: {}, // clave normalizada -> { key, name, address, lat, lon, label, windows, told, service, park, phone, notes, visits, updatedAt }
+  clients: {}, // clave normalizada -> { key, name, address, lat, lon, label, entry, windows, told, service, park, phone, notes, visits, updatedAt }
   routes: {}, // 'YYYY-MM-DD' -> { date, stops: [...], plan, status, pairs, history }
 });
 
@@ -139,6 +140,8 @@ export function sanitizeClient(c) {
     lat: located ? lat : null,
     lon: located ? lon : null,
     label: str(c.label),
+    // Por dónde se entra, si no es por la dirección (rampa, muelle...). Solo si está cerca de ella: ver entry.js.
+    entry: located ? cleanEntry(c.entry, { lat, lon }) : null,
     windows: cleanWindows(c.windows),
     // Lo que has dicho que se tarda en esta parada, de punta a punta. Si está, manda sobre todo lo demás.
     told: int(c.told, 1, 180, 0) || null,
@@ -310,7 +313,7 @@ function importRoutes(routes) {
       const c = sanitizeClient(x);
       if (!c || typeof x.id !== 'string') return null;
       return {
-        id: x.id.slice(0, 40), name: c.name, address: c.address, lat: c.lat, lon: c.lon, label: c.label, windows: c.windows,
+        id: x.id.slice(0, 40), name: c.name, address: c.address, lat: c.lat, lon: c.lon, label: c.label, entry: c.entry, windows: c.windows,
         told: c.told, service: c.service, park: c.park, phone: c.phone, notes: c.notes, needsCheck: c.needsCheck,
         done: !!x.done, doneAt: x.done ? int(x.doneAt, 0, Number.MAX_SAFE_INTEGER, 0) : undefined,
         failed: x.failed ? str(x.failed, 60) : undefined,

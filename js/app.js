@@ -7,10 +7,11 @@ import { oddHours, ODD_WINDOWS } from './hours.js';
 import { serviceFor, stopParts, measure, unloadFrom, extraTrips, toldOf, toldWhy, TRIP_MIN, MOVED_M, TOLD_MIN, TOLD_MAX, TOLD_CHOICES } from './service.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
+import { cleanEntry, goTo, entryDistanceM } from './entry.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.18.2';
+export const VERSION = '1.19.0';
 
 // ---------- Utilidades ----------
 
@@ -131,8 +132,21 @@ const oddChip = (x) => (odd(x) ? '<span class="chip late">Horario raro · llama 
 const stopMinutes = (x) => serviceFor(x, settings());
 const planStop = (x) => {
   const { unload, park, tripsMin } = stopParts(x, settings());
-  return { id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: unload + tripsMin, park, load: x.load };
+  return { id: x.id, ...goTo(x), windows: planWindows(x), service: unload + tripsMin, park, load: x.load };
 };
+// Por dónde se entra, si no es por la dirección: se enseña con lo que haya apuntado el repartidor.
+const entryOf = (x) => cleanEntry(x?.entry, x);
+// En la parada actual: aviso de que no se entra por la dirección y adónde lleva el botón de navegar.
+function entryLine(x, park) {
+  const e = entryOf(x);
+  if (!e) return '';
+  const how = park ? 'Desde la furgoneta, ve a pie al punto marcado' : `${settings().nav === 'gmaps' ? 'Maps' : 'Waze'} te lleva al punto marcado`;
+  return `<div class="notice compact gold" style="margin:12px 0 0">${I.pin}<div>No se entra por la dirección. ${how}${e.note ? `: <b>${esc(e.note)}</b>` : ''}.</div></div>`;
+}
+function entryChip(x) {
+  const e = entryOf(x);
+  return e ? `<span class="chip entry">${I.pin}Entrada: ${esc(e.note || 'punto marcado')}</span>` : '';
+}
 // Carga del pedido, del portal: cajas, cuántas de ellas son grandes y botellas sueltas. El total de botellas
 // no se enseña (es una estimación y no dice nada que no digan las cajas), pero sigue contando para marcar un
 // pedido grande (+70 botellas o +30 cajas). Si no cabe en un viaje de carretilla también se dice, que es de
@@ -173,7 +187,9 @@ function parkingFor(r) {
   return (r.parking || []).map((p) => ({ ...p, ids: p.ids.filter((id) => here.has(id)) })).filter((p) => p.ids.length >= 2);
 }
 const parkingOf = (r, id) => parkingFor(r).find((p) => p.ids.includes(id)) || null;
-const walkUrl = (p) => `https://www.google.com/maps/dir/?api=1&destination=${Number(p.lat)},${Number(p.lon)}&travelmode=walking`;
+const walkUrl = (x) => { const p = goTo(x); return `https://www.google.com/maps/dir/?api=1&destination=${Number(p.lat)},${Number(p.lon)}&travelmode=walking`; };
+// Navegar a una parada (a su punto de entrada si lo tiene) o a su aparcamiento.
+const driveUrl = (app, x, park) => navUrl(app, park || goTo(x));
 
 // Quita todos los aparcamientos de la ruta (las entregas vuelven a ir en furgoneta) y recalcula.
 async function clearParking() {
@@ -204,9 +220,10 @@ function mapApi() {
         current: r.status === 'active' ? r.current : null,
         unlocated: r.stops.filter((x) => !located(x)).length,
         stops: seq.filter(located).map((x) => ({
-          id: x.id, name: x.name || x.address, label: x.label || x.address, lat: x.lat, lon: x.lon,
+          // En el mapa (y para buscar dónde aparcar) la parada está donde se entra, no en el portal de la dirección.
+          id: x.id, name: x.name || x.address, label: x.label || x.address, ...goTo(x), entry: entryOf(x)?.note ?? null,
           windows: x.windows, planWindows: planWindows(x), service: stopMinutes(x), load: x.load || null, done: !!x.done, leg: legs.get(x.id) || null,
-          nav: navUrl(s.nav, park.find((p) => p.ids.includes(x.id)) || x),
+          nav: driveUrl(s.nav, x, park.find((p) => p.ids.includes(x.id))),
         })),
         parking: park.map((p) => ({ ...p, key: groupKey(p.ids) })),
       };
@@ -236,7 +253,7 @@ function currentRoute() { return store.route(ui.date); }
 function signature(r) {
   return JSON.stringify([
     settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey, !!settings().useWindows,
-    r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, stopMinutes(s), s.timing || '', !!s.windowsConfirmed]),
+    r.stops.map((s) => [s.id, s.lat, s.lon, goTo(s), s.windows, stopMinutes(s), s.timing || '', !!s.windowsConfirmed]),
     parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
     r.manual || null,
   ]);
@@ -307,7 +324,7 @@ function orderedStops(r) {
 }
 
 function stopCard(s, i, leg, extra = '', park = null) {
-  const chips = [loadChip(s), toldChip(s), windowsChips(s.windows), oddChip(s), timingChip(s)];
+  const chips = [loadChip(s), toldChip(s), windowsChips(s.windows), oddChip(s), timingChip(s), s.done ? '' : entryChip(s)];
   // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible y,
   // además, descuenta lo que dura la descarga: se puede llegar a tiempo y aun así no acabar antes de cerrar).
   const real = pastHours(s, leg);
@@ -478,7 +495,7 @@ function renderPlanning(r) {
       html += `<button class="btn line big block" data-action="recalc">${I.spark}Recalcular</button>`;
       // Para mirarla antes: la primera parada en el navegador (o su aparcamiento, si tiene).
       const first = stops.find((x) => !x.done && located(x));
-      if (first) html += `<a class="btn line block" style="margin-top:10px" href="${esc(navUrl(s.nav, parkingOf(r, first.id) || first))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'} a la primera: ${esc(first.name)}</a>`;
+      if (first) html += `<a class="btn line block" style="margin-top:10px" href="${esc(driveUrl(s.nav, first, parkingOf(r, first.id)))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'} a la primera: ${esc(first.name)}</a>`;
     }
     html += '</div>';
   }
@@ -552,12 +569,13 @@ function renderActive(r) {
     const ws = windowState(realWindows(cur), leg ? leg.arrive : nowMin());
     const park = parkingOf(r, cur.id);
     const parkLine = !park ? '' : leg?.foot
-      ? `<div class="notice compact info" style="margin:12px 0 0">${I.pin}<div>Desde la furgoneta, a pie: ${Math.max(1, Math.round(walkMin(park, cur)))} min.</div></div>`
-      : `<div class="notice compact gold" style="margin:12px 0 0">${I.pin}<div>Aparca ${park.dum ? `en la zona DUM de <b>${esc(park.label)}</b>` : 'en el punto medio'} y ve a pie (${Math.max(1, Math.round(walkMin(park, cur)))} min). Desde ahí haces también ${esc(park.ids.filter((id) => id !== cur.id).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done).map((x) => x.name).join(', ') || 'las demás')}.</div></div>`;
+      ? `<div class="notice compact info" style="margin:12px 0 0">${I.pin}<div>Desde la furgoneta, a pie: ${Math.max(1, Math.round(walkMin(park, goTo(cur))))} min.</div></div>`
+      : `<div class="notice compact gold" style="margin:12px 0 0">${I.pin}<div>Aparca ${park.dum ? `en la zona DUM de <b>${esc(park.label)}</b>` : 'en el punto medio'} y ve a pie (${Math.max(1, Math.round(walkMin(park, goTo(cur))))} min). Desde ahí haces también ${esc(park.ids.filter((id) => id !== cur.id).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done).map((x) => x.name).join(', ') || 'las demás')}.</div></div>`;
     html += `<section class="now" aria-labelledby="now-name">
       <div class="label">${finished === 0 ? 'Primera parada' : 'Siguiente parada'}</div>
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
+      ${entryLine(cur, park)}
       ${parkLine}
       <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${loadChip(cur)}${toldChip(cur)}${windowsChips(cur.windows)}${oddChip(cur)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
@@ -608,7 +626,7 @@ function renderActionBar() {
   const park = parkingOf(r, cur.id);
   const go = park && leg?.foot
     ? `<a class="btn gold big" href="${esc(walkUrl(cur))}" target="_blank" rel="noopener">${I.nav}A pie</a>`
-    : `<a class="btn gold big" href="${esc(navUrl(s.nav, park || cur))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>`;
+    : `<a class="btn gold big" href="${esc(driveUrl(s.nav, cur, park))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>`;
   if (ui.busy) return `${go}<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`;
   // Mientras no esté aparcada, el botón grande es «He aparcado»: con esa hora se separa lo que cuesta
   // llegar y aparcar de lo que cuesta la entrega, y así la app aprende las dos cosas por separado.
@@ -659,7 +677,7 @@ function renderClients() {
   html += list.map((c) => `<button class="client" data-action="edit-client" data-key="${esc(c.key)}">
       <span class="row between"><span class="name ellipsis">${esc(c.name)}</span>${c.visits ? `<span class="tiny faint">${esc(plural(c.visits, 'visita', 'visitas'))}</span>` : ''}</span>
       <span class="addr ellipsis">${esc(c.label || c.address || 'Sin dirección')}</span>
-      <span class="chips">${windowsChips(c.windows)}${timingChip(c)}${toldChip(c)}${toldOf(c) == null && c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
+      <span class="chips">${windowsChips(c.windows)}${timingChip(c)}${toldChip(c)}${toldOf(c) == null && c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${entryChip(c)}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
     </button>`).join('');
   return html;
 }
@@ -1070,6 +1088,7 @@ function sheetStop(sh) {
     </label>
     ${candidatesHtml(sh)}
     ${located(d) && !sh.candidates?.length ? `<div class="located">${I.pin}<span>${esc(d.label || 'Ubicación guardada')}</span></div>` : ''}
+    ${entryBlock(d)}
 
     <div class="field" style="margin-bottom:8px"><span class="small muted" style="font-weight:500" id="win-label">Horario en que acepta entregas</span></div>
     <div class="windows-edit" role="group" aria-labelledby="win-label">
@@ -1119,6 +1138,44 @@ function sheetStop(sh) {
       ${isClient ? '<button class="btn danger block" data-action="forget-client">Olvidar este cliente</button>' : ''}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
+}
+
+// Por dónde se entra: solo con la dirección ubicada, que es con lo que se compara el punto.
+function entryBlock(d) {
+  if (!located(d)) return d.entry ? '<div class="hint">Busca la dirección para ver el punto de entrada: si queda lejos de la nueva, se quitará.</div>' : '';
+  const e = entryOf(d);
+  if (!e) {
+    return `<button class="btn line block entry-add" data-action="pick-entry">${I.pin}Se entra por otro sitio (rampa, muelle…)</button>`;
+  }
+  return `<div class="entry-box">
+      <div class="entry-head">${I.pin}<span><b>Se entra por otro sitio</b>, a ${Math.round(entryDistanceM(d, e))} m de la dirección. La ruta y ${settings().nav === 'gmaps' ? 'Maps' : 'Waze'} van ahí.</span></div>
+      <label class="field"><span>Qué es (opcional)</span><input class="input" id="f-entry-note" maxlength="80" value="${esc(e.note)}" placeholder="Ej. rampa de mercancías por c/ Girona" autocomplete="off"></label>
+      <div class="actions2" style="margin-bottom:8px"><button class="btn line" data-action="pick-entry">Moverlo en el mapa</button><button class="btn ghost" data-action="clear-entry">Quitar</button></div>
+    </div>`;
+}
+
+async function pickEntry() {
+  const sh = ui.sheet;
+  if (!sh?.draft) return;
+  syncDraft();
+  const d = sh.draft;
+  if (!located(d)) return toast('Primero busca la dirección');
+  const { pickPoint } = await import('./map.js');
+  const base = { lat: d.lat, lon: d.lon };
+  const p = await pickPoint({
+    base, start: entryOf(d), name: d.name || d.address,
+    locate: () => currentPosition(8000),
+    check: (q) => {
+      const m = entryDistanceM(base, q);
+      if (cleanEntry(q, base)) return { ok: true, text: `A ${Math.round(m)} m de la dirección.` };
+      return m < 50 ? { ok: false, text: 'Está encima de la dirección: marca la otra entrada.' }
+        : { ok: false, text: `Está a ${m >= 1000 ? `${(m / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(m)} m`} de la dirección: demasiado lejos para ser otra puerta del mismo local. Si se ha mudado, cambia la dirección.` };
+    },
+  });
+  if (ui.sheet !== sh || !p) return;
+  d.entry = { lat: p.lat, lon: p.lon, note: d.entry?.note || '' };
+  renderSheet();
+  $('#f-entry-note')?.focus();
 }
 
 function serviceHint(sh) {
@@ -1221,6 +1278,7 @@ function syncDraft() {
   if ($('#f-phone')) d.phone = v('#f-phone').trim();
   if ($('#f-notes')) d.notes = v('#f-notes').trim();
   if ($('#f-confirmed')) d.windowsConfirmed = $('#f-confirmed').checked;
+  if ($('#f-entry-note') && d.entry) d.entry.note = v('#f-entry-note').trim().slice(0, 80);
   document.querySelectorAll('[data-win]').forEach((inp) => {
     const i = +inp.dataset.win, end = +inp.dataset.end;
     const m = toMin(inp.value);
@@ -1245,6 +1303,7 @@ function stopDraft(src = {}) {
     lat: located(src) ? src.lat : null,
     lon: located(src) ? src.lon : null,
     label: src.label || '',
+    entry: entryOf(src) ? { ...entryOf(src) } : null,
     windows: (src.windows || []).map((w) => [...w]),
     told: toldOf(src),
     service: src.service ?? settings().service,
@@ -1298,7 +1357,7 @@ function fillFromMemory() {
   if (!mem) return;
   syncDraft();
   const d = sh.draft;
-  if (!d.address) Object.assign(d, { address: mem.address, lat: located(mem) ? mem.lat : null, lon: located(mem) ? mem.lon : null, label: mem.label || '', needsCheck: !!mem.needsCheck });
+  if (!d.address) Object.assign(d, { address: mem.address, lat: located(mem) ? mem.lat : null, lon: located(mem) ? mem.lon : null, label: mem.label || '', entry: entryOf(mem) ? { ...entryOf(mem) } : null, needsCheck: !!mem.needsCheck });
   if (!d.windows.length && mem.windows?.length) d.windows = mem.windows.map((w) => [...w]);
   d.told = d.told ?? toldOf(mem); // lo que dijiste la última vez en este cliente
   d.service = mem.service ?? d.service;
@@ -1317,6 +1376,8 @@ function stopFields(d) {
   return {
     name: d.name, address: d.address,
     lat: loc ? d.lat : null, lon: loc ? d.lon : null, label: loc ? d.label || '' : '',
+    // Si la dirección ha cambiado y el punto de entrada queda lejos de la nueva, ya no vale y se borra.
+    entry: loc ? cleanEntry(d.entry, d) : null,
     windows: d.windows, windowsConfirmed: !!d.windowsConfirmed && d.windows.length > 0,
     told: toldOf(d), service: d.service, park: d.park ?? 0, timing: d.timing || '', phone: d.phone, notes: d.notes,
     needsCheck: loc ? !!d.needsCheck : false,
@@ -1344,6 +1405,7 @@ async function saveStop() {
     if (ui.sheet !== sh) return false;
   }
   const fields = stopFields(d);
+  const lostEntry = !!d.entry && !fields.entry;
   const renamedFrom = sh.mode === 'client' ? sh.key : undefined;
   if (JSON.parse(sh.initial).service !== d.service) Object.assign(fields, { serviceLog: [], serviceLearned: false });
   const isDemo = sh.id && currentRoute().stops.find((x) => x.id === sh.id)?.demo;
@@ -1361,11 +1423,12 @@ async function saveStop() {
     }
     store.save();
     closeSheet();
-    if (r.status === 'active') { replanActive('Parada actualizada'); return true; }
-    toast(located(fields) ? (sh.id ? 'Parada guardada' : 'Parada añadida') : 'Guardada sin ubicar: búscala para incluirla');
+    if (r.status === 'active') { replanActive(lostEntry ? 'Parada actualizada · punto de entrada quitado, quedaba lejos de la nueva dirección' : 'Parada actualizada'); return true; }
+    toast(lostEntry ? 'Guardada · el punto de entrada quedaba lejos de la nueva dirección y se ha quitado'
+      : located(fields) ? (sh.id ? 'Parada guardada' : 'Parada añadida') : 'Guardada sin ubicar: búscala para incluirla', lostEntry ? 4500 : 2600);
   } else {
     closeSheet();
-    toast('Cliente guardado');
+    toast(lostEntry ? 'Cliente guardado · el punto de entrada quedaba lejos de la nueva dirección y se ha quitado' : 'Cliente guardado', lostEntry ? 4500 : 2600);
   }
   render();
   return true;
@@ -1635,6 +1698,8 @@ const actions = {
   },
   'dismiss-change': () => { currentRoute().lastChange = null; store.save(); render(); },
   'open-stop': () => openSheet({ kind: 'stop', draft: stopDraft() }),
+  'pick-entry': () => pickEntry(),
+  'clear-entry': () => { if (!ui.sheet?.draft) return; syncDraft(); ui.sheet.draft.entry = null; renderSheet(); },
   'edit-stop': (el) => {
     const s = currentRoute().stops.find((x) => x.id === el.dataset.id);
     if (s) openSheet({ kind: 'stop', id: s.id, draft: stopDraft(s) });

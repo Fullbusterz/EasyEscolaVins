@@ -12,6 +12,7 @@ const ATTR = '© <a href="https://www.icgc.cat/" target="_blank" rel="noopener">
 const GOLD = '#c9a54c', WALK = '#9fd1b2', ZONE = '#6f9fd8';
 const ZONES_FROM_ZOOM = 16; // las zonas de carga y descarga solo se pintan de cerca
 const X = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const HOUSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z" fill="currentColor"/></svg>';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const ll = (p) => [p.lat, p.lon];
@@ -176,6 +177,7 @@ function onStop(s, marker) {
   const leg = s.leg;
   const win = s.windows?.length ? s.windows.map(([a, b]) => `${fmt(a)}–${fmt(b)}`).join(', ') : 'cualquier hora';
   marker.bindPopup(`<b>${esc(s.name)}</b><br><span class="muted">${esc(s.label || '')}</span><br>
+    ${s.entry != null ? `<b>Se entra por aquí</b>${s.entry ? `: ${esc(s.entry)}` : ''}<br>` : ''}
     ${leg ? `Llegada ${fmt(leg.arrive)} · ` : ''}Horario ${esc(win)}${parkOf(s.id) ? '<br>A pie desde el aparcamiento' : ''}
     ${s.done ? '' : `<div class="pop-actions"><a href="${esc(s.nav)}" target="_blank" rel="noopener">Abrir en ${st.data.nav === 'gmaps' ? 'Maps' : 'Waze'}</a></div>`}`).openPopup();
 }
@@ -254,6 +256,119 @@ function onClick(e) {
   }
   if (what === 'clear') { st.map.closePopup(); return run('Recalculando la ruta…', () => st.api.clear()); }
   if (what === 'unpark') { st.map.closePopup(); return run('Recalculando la ruta…', () => st.api.remove(el.dataset.key)); }
+}
+
+// ---------- Marcar por dónde se entra en un cliente ----------
+// Mapa aparte, encima de la ficha: la dirección queda fija y el repartidor pone el punto donde para la
+// furgoneta para descargar (tocando el mapa, arrastrando el punto o con «Estoy aquí» si está allí mismo).
+// Devuelve { lat, lon } o null si se cancela. check(p) dice si el punto vale: { ok, text }.
+
+const pk = { map: null, layers: null, done: null, base: null, point: null, check: null, locate: null, busy: false };
+
+export async function pickPoint({ base, start = null, name = '', check, locate }) {
+  if (pk.done) pk.done(null); // por si quedaba uno abierto
+  Object.assign(pk, { base, point: start ? { lat: start.lat, lon: start.lon } : null, check, locate, busy: false });
+  let root = document.getElementById('pickview');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'pickview';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-labelledby', 'pick-title');
+    root.innerHTML = `<div class="map-top"><div><h2 id="pick-title">Por dónde se entra</h2><div class="tiny faint" id="pick-name"></div></div>
+        <button class="iconbtn" data-pick="cancel" aria-label="Cancelar">${X}</button></div>
+      <div id="pickmap"></div><div class="map-panel" id="pick-panel" aria-live="polite"></div>`;
+    document.body.append(root);
+    root.addEventListener('click', onPickClick);
+    // Escape cierra solo el mapa, no la ficha que hay debajo.
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !root.hidden) { e.stopPropagation(); finishPick(null); }
+    }, true);
+  }
+  document.getElementById('pick-name').textContent = name;
+  root.hidden = false;
+  document.body.classList.add('map-open');
+  pickPanel('<div class="small muted">Cargando el mapa…</div>');
+  const result = new Promise((resolve) => { pk.done = resolve; });
+  let L;
+  try { L = await loadLeaflet(); } catch (e) {
+    pickPanel(`<div class="notice warn">${esc(e.message)}. Comprueba la conexión.</div><div class="map-actions"><button class="btn ghost" data-pick="cancel">Cerrar</button></div>`);
+    return result;
+  }
+  if (!pk.map) {
+    pk.map = L.map('pickmap', { zoomControl: false });
+    L.tileLayer(TILES, { maxZoom: 19, attribution: ATTR }).addTo(pk.map);
+    L.control.zoom({ position: 'topright' }).addTo(pk.map);
+    pk.map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
+    pk.layers = L.layerGroup().addTo(pk.map);
+    pk.map.on('click', (e) => { if (!pk.busy) { pk.point = { lat: e.latlng.lat, lon: e.latlng.lng }; drawPick(); } });
+  }
+  setTimeout(() => {
+    pk.map.invalidateSize();
+    if (pk.point) pk.map.fitBounds([ll(pk.base), ll(pk.point)], { padding: [70, 70], maxZoom: 18 });
+    else pk.map.setView(ll(pk.base), 18);
+    drawPick();
+  }, 0);
+  return result;
+}
+
+function drawPick() {
+  const L = window.L;
+  pk.layers.clearLayers();
+  L.marker(ll(pk.base), { icon: icon('addr', HOUSE, 26), keyboard: false, title: 'Dirección del cliente', zIndexOffset: -100 }).addTo(pk.layers)
+    .bindTooltip('Dirección', { direction: 'top', offset: [0, -12] });
+  if (pk.point) {
+    L.polyline([ll(pk.base), ll(pk.point)], { color: GOLD, weight: 2, dashArray: '4 6', interactive: false }).addTo(pk.layers);
+    const m = L.marker(ll(pk.point), { icon: icon('entry', 'E', 34), draggable: true, zIndexOffset: 1000, title: 'Por aquí se entra' }).addTo(pk.layers);
+    m.on('dragend', () => { const p = m.getLatLng(); pk.point = { lat: p.lat, lon: p.lng }; drawPick(); });
+  }
+  renderPick();
+}
+
+function renderPick() {
+  if (pk.busy) return pickPanel(`<button class="btn gold big block" disabled><span class="spin"></span>${esc(pk.busy)}</button>`);
+  const c = pk.point ? pk.check(pk.point) : null;
+  pickPanel(`<div class="small">${pk.point ? 'Arrastra la <b>E</b> o toca el mapa para moverla.' : 'Toca el mapa donde paras para descargar: la rampa, el muelle o la puerta de mercancías.'}</div>
+    ${c ? `<div class="small ${c.ok ? 'muted' : 'late-ink'}" style="margin-top:4px">${esc(c.text)}</div>` : ''}
+    <div class="map-actions three"><button class="btn gold" data-pick="save"${c?.ok ? '' : ' disabled'}>Guardar el punto</button>
+      ${pk.locate ? '<button class="btn ghost" data-pick="here">Estoy aquí</button>' : ''}
+      <button class="btn ghost" data-pick="cancel">Cancelar</button></div>`);
+}
+
+async function onPickClick(e) {
+  const el = e.target.closest('[data-pick]');
+  if (!el || el.disabled) return;
+  e.preventDefault();
+  const what = el.dataset.pick;
+  if (what === 'cancel') return finishPick(null);
+  if (what === 'save') return pk.point && pk.check(pk.point).ok && finishPick({ ...pk.point });
+  if (what === 'here') {
+    pk.busy = 'Buscando dónde estás…'; renderPick();
+    const p = await pk.locate();
+    pk.busy = false;
+    if (!p) { renderPick(); return pickNote('No se ha podido saber dónde estás. Toca el mapa en su lugar.'); }
+    pk.point = { lat: p.lat, lon: p.lon };
+    pk.map.fitBounds([ll(pk.base), ll(pk.point)], { padding: [70, 70], maxZoom: 18 });
+    drawPick();
+    if (p.accuracy > 40) pickNote(`El GPS va con ±${Math.round(p.accuracy)} m: comprueba el punto en el mapa.`);
+  }
+}
+
+function finishPick(v) {
+  const root = document.getElementById('pickview');
+  if (root) root.hidden = true;
+  if (document.getElementById('mapview')?.hidden !== false) document.body.classList.remove('map-open');
+  const done = pk.done;
+  pk.done = null;
+  done?.(v);
+}
+
+function pickPanel(html) { const p = document.getElementById('pick-panel'); if (p) p.innerHTML = html; }
+function pickNote(text) {
+  const p = document.getElementById('pick-panel');
+  if (!p) return;
+  p.querySelector('.map-note')?.remove();
+  p.insertAdjacentHTML('afterbegin', `<div class="notice warn map-note" style="margin:0 0 10px">${esc(text)}</div>`);
 }
 
 function panelNote(text) {
