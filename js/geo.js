@@ -5,9 +5,11 @@
 // - Tráfico real (opcional, clave de TomTom): una sola consulta por ruta corrige los tramos elegidos.
 //   Esos tiempos no se guardan: las condiciones de TomTom no permiten almacenarlos.
 
+// Almacén (Sant Joan Despí): sin población escrita, el buscador prefiere lo que queda cerca.
 const BCN = { lat: 41.372, lon: 2.077 };
-// Zona de reparto: Barcelona y área metropolitana (los buscadores solo devuelven resultados dentro).
-const BOX = { minLon: 1.85, minLat: 41.22, maxLon: 2.3, maxLat: 41.52 };
+// Zona de reparto: toda Cataluña (los buscadores solo devuelven resultados dentro). Antes era solo el área
+// de Barcelona y una ruta por Terrassa, el Masnou o Canovelles se quedaba sin ninguna dirección.
+const BOX = { minLon: 0.15, minLat: 40.5, maxLon: 3.35, maxLat: 42.9 };
 const inBox = (p) => p.lon >= BOX.minLon && p.lon <= BOX.maxLon && p.lat >= BOX.minLat && p.lat <= BOX.maxLat;
 
 // Con poca cobertura una petición puede quedarse colgada: mejor fallar rápido y seguir con lo que hay.
@@ -61,7 +63,8 @@ const TOWN_ES_CA = {
 // Lo que es del local y no del portal: los buscadores no lo entienden y no devuelven nada.
 const LOCAL_WORDS = String.raw`(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala|naves?|nau)`;
 const LOCAL_PART = new RegExp(String.raw`^\s*${LOCAL_WORDS}(?![\p{L}])`, 'iu');
-const LOCAL_TAIL = new RegExp(String.raw`(\b\d+\s*[a-z]?)\s+${LOCAL_WORDS}(?![\p{L}]).*$`, 'iu');
+// También entre guiones o paréntesis: «14 -NAVE CAN CASTELLS-», «7 (LOCAL 2)».
+const LOCAL_TAIL = new RegExp(String.raw`(\b\d+\s*[a-z]?)(?:\s+|\s*[-–(]\s*)${LOCAL_WORDS}(?![\p{L}]).*$`, 'iu');
 // «C.C.GRAN VIA- GRAN VIA, 75» o «CENTRO COMERCIAL X, CALLE…»: el nombre del centro comercial delante de la calle.
 const MALL = /^\s*(?:c\.\s?c\.?|c\.c\b|centro comercial|centre comercial)\s*[^,-]*(?:-\s*|,\s*(?=[^,]*,))/i;
 // «268 BIS», «12 TER», «5 DUP»: el bis es parte del portal, no de la calle, y el callejero casi nunca lo tiene.
@@ -85,7 +88,7 @@ export function normalizeAddress(q) {
   s = s.replace(PORTAL_SUFFIX, '$1');
   // Lo que va tras el número es del local ("75 LOCAL 2", "12 BAJOS", "3 PISO 2"): los buscadores no lo
   // entienden y no devuelven nada. Se busca el portal.
-  const parts = s.split(',').map((p) => p.replace(LOCAL_TAIL, '$1'))
+  const parts = s.split(',').map((p) => p.replace(LOCAL_TAIL, '$1').trimEnd())
     // Lo mismo en un trozo aparte ("25, LOCAL IZQUIERDA", "54, BAJOS") y el distrito metido en medio
     // ("31, CIUTAT VELLA, BARCELONA"): con eso el buscador no encuentra nada o da el número de enfrente.
     .filter((p, i, all) => i === 0 || i === all.length - 1 || !(LOCAL_PART.test(p) || DISTRICTS.has(fold(p).replace(/[^a-z]+/g, ' ').trim())));
@@ -137,9 +140,12 @@ const sameStreet = (words, label) => {
   return words.every((w) => l.includes(w) || lw.some((x) => nearWord(w, x)));
 };
 
-async function icgc(q) {
+// near: preferir lo cercano al almacén. Solo sin población escrita: con ella, el punto cambia el orden y
+// «La Rambla 31, Barcelona» pasaba a dar la Rambla de la Muntanya.
+async function icgc(q, near) {
   const url = `https://eines.icgc.cat/geocodificador/cerca?text=${encodeURIComponent(q)}&layers=address&size=5` +
-    `&boundary.rect.min_lon=${BOX.minLon}&boundary.rect.min_lat=${BOX.minLat}&boundary.rect.max_lon=${BOX.maxLon}&boundary.rect.max_lat=${BOX.maxLat}`;
+    `&boundary.rect.min_lon=${BOX.minLon}&boundary.rect.min_lat=${BOX.minLat}&boundary.rect.max_lon=${BOX.maxLon}&boundary.rect.max_lat=${BOX.maxLat}` +
+    (near ? `&focus.point.lat=${BCN.lat}&focus.point.lon=${BCN.lon}` : '');
   const res = await get(url);
   if (!res.ok) throw new Error(`ICGC ${res.status}`);
   const data = await res.json();
@@ -164,6 +170,35 @@ async function cartociudad(q) {
     .filter((c) => c.type === 'portal' && c.lat != null)
     .map((c) => ({ lat: c.lat, lon: c.lng, label: cartoLabel(c), town: c.muni, source: 'cartociudad' }))
     .filter(inBox);
+}
+
+// Calles de polígono que el callejero tiene sin portales (Joan de la Cierva, Canovelles): ningún buscador da el
+// número, pero CartoCiudad sí tiene la calle entera. Se ubica en medio de la calle, sin número, y solo si es de la
+// población escrita: en un polígono la calle es corta y el conductor lo revisa al llegar.
+async function cartoStreet(q, want) {
+  const parts = q.split(',');
+  if (!want || parts.length < 2) return [];
+  const street = parts[0].replace(/\s+\d{1,4}\b.*$/, '').trim();
+  const town = parts[parts.length - 1].trim();
+  const res = await get(`https://www.cartociudad.es/geocoder/api/geocoder/candidates?q=${encodeURIComponent(`${street}, ${town}`)}&limit=5`);
+  if (!res.ok) throw new Error(`CartoCiudad ${res.status}`);
+  const data = await res.json();
+  // La misma calle en las dos direcciones: el buscador también da las que se le parecen («Riera» → «Riera Basté»).
+  const words = streetWords(street);
+  const c = (Array.isArray(data) ? data : []).find((x) => {
+    const name = String(x.address || '').split(',')[0];
+    return x.type === 'callejero' && x.id && sameTown(want, x.muni) && words.length &&
+      sameStreet(words, name) && sameStreet(streetWords(name), street);
+  });
+  if (!c) return [];
+  const found = await get(`https://www.cartociudad.es/geocoder/api/geocoder/find?id=${encodeURIComponent(c.id)}&type=callejero`);
+  if (!found.ok) throw new Error(`CartoCiudad ${found.status}`);
+  const geom = String((await found.json()).geom || '');
+  const pts = [...geom.matchAll(/(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g)].map((m) => ({ lon: +m[1], lat: +m[2] }));
+  const mid = pts[Math.floor(pts.length / 2)];
+  if (!mid || !inBox(mid)) return [];
+  const name = cartoLabel({ address: String(c.address).split(',')[0], muni: '' }).replace(/,\s*$/, '');
+  return [{ ...mid, label: `${name} (sin número), ${c.muni}`, town: c.muni, source: 'cartociudad', noNumber: true }];
 }
 
 let lastNominatim = 0;
@@ -211,7 +246,7 @@ export async function geocode(query, { kind = 'address' } = {}) {
 
   const q = normalizeAddress(raw);
   const tried = [];
-  for (const provider of [() => icgc(q), () => cartociudad(q), () => nominatim(raw)]) {
+  for (const provider of [() => icgc(q, !want), () => cartociudad(q), () => nominatim(raw), () => cartoStreet(q, want)]) {
     let list;
     try { list = mark(await provider()); } catch { continue; }
     if (list.some((c) => !c.doubt)) return [...list.filter((c) => !c.doubt), ...list.filter((c) => c.doubt), ...tried].slice(0, 5);
