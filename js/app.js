@@ -11,7 +11,7 @@ import { cleanEntry, goTo, entryDistanceM } from './entry.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.19.0';
+export const VERSION = '1.19.1';
 
 // ---------- Utilidades ----------
 
@@ -1229,8 +1229,10 @@ function sheetPortal(sh) {
   const { date, stops } = sh.portal;
   const have = new Set(store.route(date).stops.map((x) => clientKey(x.name)));
   const fresh = stops.filter((it) => !have.has(clientKey(it.name)));
-  // Paradas que ya estaban pero sin la carga o las notas de factura que ahora trae el portal (traídas con una versión anterior).
-  const reload = sh.untrusted ? 0 : stops.filter((it) => store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && portalStale(x, it))).length;
+  // Paradas que ya estaban pero sin la carga o las notas de factura que ahora trae el portal (traídas con una versión
+  // anterior), o sin ubicar (se vuelven a buscar al ponerlas al día).
+  const lostStop = (x) => !x.done && !located(x) && !!x.address;
+  const reload = sh.untrusted ? 0 : stops.filter((it) => store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && (portalStale(x, it) || lostStop(x)))).length;
   return `<h2 id="sheet-title">${sh.untrusted ? 'Ruta recibida' : 'Ruta del portal'}</h2>
     <div class="small muted" style="margin:-6px 0 12px">${esc(dayName(date).long)} · ${stops.length === 1 ? '1 parada' : `${stops.length} paradas`}${fresh.length < stops.length ? ` · ${stops.length - fresh.length} ya estaban en la ruta` : ''}</div>
     ${untrustedNotice(sh)}
@@ -1877,10 +1879,31 @@ async function pasteAdd() {
       if (add.length) old.notes = [old.notes, ...add].filter(Boolean).join('\n').slice(0, 500);
     }
   }
+  // Las que ya estaban pero se quedaron sin ubicar (antes solo se buscaba en el área de Barcelona) se vuelven
+  // a buscar: así traer la ruta otra vez las arregla sin tener que borrarlas.
+  let relocated = 0;
+  if (portal && !untrusted) {
+    const lost = r.stops.filter((x) => !x.done && !located(x) && x.address && sh.parsed.some((it) => clientKey(it.name) === clientKey(x.name)));
+    for (const [i, old] of lost.entries()) {
+      sh.busy = `Buscando direcciones ${i + 1}/${lost.length}…`;
+      renderSheet();
+      try {
+        const [hit] = await geocode(old.address);
+        if (hit && !hit.doubt) {
+          Object.assign(old, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
+          store.rememberClient({ name: old.name, address: old.address, lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
+          relocated++;
+        }
+      } catch { /* sigue sin ubicar */ }
+    }
+  }
   const items = portal ? sh.parsed.filter((it) => !have.has(clientKey(it.name))) : sh.parsed;
   if (portal && !items.length) {
-    store.save(); closeSheet(); render();
-    return toast('Paradas puestas al día');
+    store.save(); sh.busy = null; closeSheet();
+    toast(relocated ? `Paradas puestas al día · ${relocated === 1 ? '1 ubicada' : `${relocated} ubicadas`}` : 'Paradas puestas al día');
+    if (!relocated) return render();
+    if (r.status === 'active') return replanActive(null);
+    return r.stops.some(located) ? optimize() : render();
   }
   let n = 0, unlocated = 0;
   for (const it of items) {
