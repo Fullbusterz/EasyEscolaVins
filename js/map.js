@@ -4,6 +4,7 @@
 // Mapa base: © ICGC (CC BY 4.0) y © OpenStreetMap. Leaflet 1.9.4 (BSD-2-Clause) en vendor/leaflet.
 
 import { spotsFor, spotAt, parkedTime, walkMin, trips, DUM_MINUTES } from './parking.js';
+import { openNav } from './geo.js';
 import { bigOrder } from './portal.js';
 import { fmt } from './parse.js';
 
@@ -39,7 +40,7 @@ const st = { api: null, data: null, map: null, layers: null, zones: null, mode: 
 
 /**
  * api.data(): { depot, returnToDepot, planned, current, unlocated, nav, zones,
- *   stops: [{id, name, label, lat, lon, windows, planWindows, service, done, leg, nav}] en orden,
+ *   stops: [{id, name, label, lat, lon, windows, planWindows, service, done, leg, nav, navApp}] en orden,
  *   parking: [{key, ids, lat, lon, label, dum}] }
  * api.accept(ids, spot), api.remove(key): cambian la ruta y la recalculan (async). api.closed(): al cerrar.
  */
@@ -179,7 +180,10 @@ function onStop(s, marker) {
   marker.bindPopup(`<b>${esc(s.name)}</b><br><span class="muted">${esc(s.label || '')}</span><br>
     ${s.entry != null ? `<b>Se entra por aquí</b>${s.entry ? `: ${esc(s.entry)}` : ''}<br>` : ''}
     ${leg ? `Llegada ${fmt(leg.arrive)} · ` : ''}Horario ${esc(win)}${parkOf(s.id) ? '<br>A pie desde el aparcamiento' : ''}
-    ${s.done ? '' : `<div class="pop-actions"><a href="${esc(s.nav)}" target="_blank" rel="noopener">Abrir en ${st.data.nav === 'gmaps' ? 'Maps' : 'Waze'}</a></div>`}`).openPopup();
+    ${s.done ? '' : `<div class="pop-actions"><a href="${esc(s.nav)}"${s.navApp ? ` data-deep="${esc(s.navApp)}"` : ''} target="_blank" rel="noopener">Abrir en ${st.data.nav === 'gmaps' ? 'Maps' : 'Waze'}</a></div>`}`).openPopup();
+  // Leaflet corta los clics dentro del globo, así que el enlace lleva su propio manejador.
+  const go = marker.getPopup()?.getElement()?.querySelector('a[data-deep]');
+  if (go) go.addEventListener('click', (e) => { e.preventDefault(); openNav(go.dataset.deep, go.href); });
 }
 
 function panel(html) { const p = document.getElementById('map-panel'); if (p) p.innerHTML = html; }

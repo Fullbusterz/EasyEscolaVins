@@ -350,10 +350,59 @@ export async function trafficLegs(points, { key, departAt, live }) {
 
 // ---------- Navegación ----------
 
-export function navUrl(app, p) {
+// Dos enlaces para el mismo sitio:
+// - navUrl: la web de Waze/Maps. Siempre funciona, pero en el móvil hace parada y fonda: abre la web y hay
+//   que darle a «abrir en la app». Se queda como href del enlace (copiar, compartir, y si falla el otro).
+// - navAppUrl: abre la app ya instalada y empieza a navegar, sin pasar por la web. Es el que se usa al tocar.
+// mode: 'driving' (en furgoneta) o 'walking' (a pie desde el aparcamiento).
+
+export function navUrl(app, p, mode = 'driving') {
   p = { lat: Number(p.lat), lon: Number(p.lon) };
+  if (mode === 'walking') return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}&travelmode=walking`;
   if (app === 'gmaps') return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}&travelmode=driving&dir_action=navigate`;
   return `https://waze.com/ul?ll=${p.lat},${p.lon}&navigate=yes`;
+}
+
+const agent = () => (typeof navigator === 'undefined' ? '' : navigator.userAgent || '');
+const touches = () => (typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints || 0);
+
+/**
+ * Enlace directo a la app instalada, o '' si no se conoce uno para este aparato (en el ordenador, p. ej.):
+ * entonces se usa navUrl. A pie siempre es Maps: Waze no guía a peatones.
+ */
+export function navAppUrl(app, p, mode = 'driving', ua = agent()) {
+  p = { lat: Number(p.lat), lon: Number(p.lon) };
+  const android = /Android/i.test(ua);
+  const ios = /iPad|iPhone|iPod/i.test(ua) || (/Macintosh/i.test(ua) && touches() > 1);
+  if (!android && !ios) return '';
+  if (app === 'gmaps' || mode === 'walking') {
+    return android
+      ? `google.navigation:q=${p.lat},${p.lon}&mode=${mode === 'walking' ? 'w' : 'd'}`
+      : `comgooglemaps://?daddr=${p.lat},${p.lon}&directionsmode=${mode}`;
+  }
+  return `waze://?ll=${p.lat},${p.lon}&navigate=yes`;
+}
+
+// Si la app no está instalada, el móvil se queda donde está (o avisa de que no sabe abrir ese enlace).
+// Si al pasar este tiempo seguimos aquí, es que no se ha abierto: entonces, a la web.
+const APP_WAIT = 1500;
+
+/**
+ * Abre la navegación: primero la app, y si no se abre, su web.
+ */
+export function openNav(deep, web) {
+  if (!deep) { window.location.href = web; return; }
+  let gone = false;
+  const leaving = () => { gone = true; };
+  document.addEventListener('visibilitychange', leaving);
+  window.addEventListener('pagehide', leaving);
+  setTimeout(() => {
+    document.removeEventListener('visibilitychange', leaving);
+    window.removeEventListener('pagehide', leaving);
+    // Si la app se abrió, al volver el temporizador puede dispararse tarde: no reabrir nada.
+    if (!gone && !document.hidden) window.location.href = web;
+  }, APP_WAIT);
+  window.location.href = deep;
 }
 
 export function currentPosition(timeout = 8000) {
