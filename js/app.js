@@ -1,5 +1,5 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
-import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs, haversineKm } from './geo.js';
+import { geocode, navUrl, navAppUrl, openNav, currentPosition, coordsFromText, travelMatrix, trafficLegs, haversineKm } from './geo.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
 import { bigOrder } from './portal.js';
@@ -11,7 +11,7 @@ import { cleanEntry, goTo, entryDistanceM } from './entry.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.19.1';
+export const VERSION = '1.20.0';
 
 // ---------- Utilidades ----------
 
@@ -187,9 +187,15 @@ function parkingFor(r) {
   return (r.parking || []).map((p) => ({ ...p, ids: p.ids.filter((id) => here.has(id)) })).filter((p) => p.ids.length >= 2);
 }
 const parkingOf = (r, id) => parkingFor(r).find((p) => p.ids.includes(id)) || null;
-const walkUrl = (x) => { const p = goTo(x); return `https://www.google.com/maps/dir/?api=1&destination=${Number(p.lat)},${Number(p.lon)}&travelmode=walking`; };
 // Navegar a una parada (a su punto de entrada si lo tiene) o a su aparcamiento.
-const driveUrl = (app, x, park) => navUrl(app, park || goTo(x));
+const drivePoint = (x, park) => park || goTo(x);
+// Atributos de un enlace de navegación. Al tocarlo se abre la app instalada (Waze o Maps) y empieza a
+// navegar; si el móvil no la tiene, cae en la web. El href se queda con la web para poder copiarlo o
+// compartirlo, y para que el enlace siga sirviendo si algo falla.
+function navLink(app, p, mode = 'driving') {
+  const deep = navAppUrl(app, p, mode);
+  return `href="${esc(navUrl(app, p, mode))}" target="_blank" rel="noopener"${deep ? ` data-action="nav-go" data-deep="${esc(deep)}"` : ''}`;
+}
 
 // Quita todos los aparcamientos de la ruta (las entregas vuelven a ir en furgoneta) y recalcula.
 async function clearParking() {
@@ -219,12 +225,15 @@ function mapApi() {
         depot: s.depot, returnToDepot: s.returnToDepot, planned, nav: s.nav, zones: DUM_ZONES,
         current: r.status === 'active' ? r.current : null,
         unlocated: r.stops.filter((x) => !located(x)).length,
-        stops: seq.filter(located).map((x) => ({
-          // En el mapa (y para buscar dónde aparcar) la parada está donde se entra, no en el portal de la dirección.
-          id: x.id, name: x.name || x.address, label: x.label || x.address, ...goTo(x), entry: entryOf(x)?.note ?? null,
-          windows: x.windows, planWindows: planWindows(x), service: stopMinutes(x), load: x.load || null, done: !!x.done, leg: legs.get(x.id) || null,
-          nav: driveUrl(s.nav, x, park.find((p) => p.ids.includes(x.id))),
-        })),
+        stops: seq.filter(located).map((x) => {
+          const to = drivePoint(x, park.find((p) => p.ids.includes(x.id)));
+          return {
+            // En el mapa (y para buscar dónde aparcar) la parada está donde se entra, no en el portal de la dirección.
+            id: x.id, name: x.name || x.address, label: x.label || x.address, ...goTo(x), entry: entryOf(x)?.note ?? null,
+            windows: x.windows, planWindows: planWindows(x), service: stopMinutes(x), load: x.load || null, done: !!x.done, leg: legs.get(x.id) || null,
+            nav: navUrl(s.nav, to), navApp: navAppUrl(s.nav, to),
+          };
+        }),
         parking: park.map((p) => ({ ...p, key: groupKey(p.ids) })),
       };
     },
@@ -495,7 +504,7 @@ function renderPlanning(r) {
       html += `<button class="btn line big block" data-action="recalc">${I.spark}Recalcular</button>`;
       // Para mirarla antes: la primera parada en el navegador (o su aparcamiento, si tiene).
       const first = stops.find((x) => !x.done && located(x));
-      if (first) html += `<a class="btn line block" style="margin-top:10px" href="${esc(driveUrl(s.nav, first, parkingOf(r, first.id)))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'} a la primera: ${esc(first.name)}</a>`;
+      if (first) html += `<a class="btn line block" style="margin-top:10px" ${navLink(s.nav, drivePoint(first, parkingOf(r, first.id)))}>${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'} a la primera: ${esc(first.name)}</a>`;
     }
     html += '</div>';
   }
@@ -625,8 +634,8 @@ function renderActionBar() {
   const leg = (r.plan?.legs || []).find((l) => l.id === cur.id);
   const park = parkingOf(r, cur.id);
   const go = park && leg?.foot
-    ? `<a class="btn gold big" href="${esc(walkUrl(cur))}" target="_blank" rel="noopener">${I.nav}A pie</a>`
-    : `<a class="btn gold big" href="${esc(driveUrl(s.nav, cur, park))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>`;
+    ? `<a class="btn gold big" ${navLink(s.nav, goTo(cur), 'walking')}>${I.nav}A pie</a>`
+    : `<a class="btn gold big" ${navLink(s.nav, drivePoint(cur, park))}>${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>`;
   if (ui.busy) return `${go}<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`;
   // Mientras no esté aparcada, el botón grande es «He aparcado»: con esa hora se separa lo que cuesta
   // llegar y aparcar de lo que cuesta la entrega, y así la app aprende las dos cosas por separado.
@@ -655,7 +664,7 @@ function renderDone(r) {
   return `${dayBar()}<div class="card finish">
       <div class="serif">Ruta terminada</div>
       <div class="muted" style="margin:6px 0 18px">${plural(delivered, 'parada', 'paradas')}${done.length > delivered ? ` · ${done.length - delivered} sin entregar` : ''} · de ${first ? fmt(minOfDay(r.startedAt || first.doneAt)) : '--'} a ${last ? fmt(minOfDay(last.doneAt)) : '--'}</div>
-      <a class="btn gold big block" href="${esc(navUrl(s.nav, s.depot))}" target="_blank" rel="noopener">${I.nav}Volver al almacén</a>
+      <a class="btn gold big block" ${navLink(s.nav, s.depot)}>${I.nav}Volver al almacén</a>
       <div style="height:10px"></div>
       <button class="btn ghost block" data-action="goto-tomorrow">Preparar la ruta de mañana</button>
     </div>
@@ -1813,6 +1822,7 @@ const actions = {
   },
   close: () => requestCloseSheet(),
   'nav-app': (el) => { store.setSettings({ nav: el.dataset.v === 'gmaps' ? 'gmaps' : 'waze' }); render(); },
+  'nav-go': (el) => openNav(el.dataset.deep, el.href),
   'test-key': () => testKey(),
   'test-ors': () => testOrs(),
   'change-depot': () => openSheet({ kind: 'depot', draft: { address: '', lat: null, lon: null, label: '' } }),

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAddress, sameNumber, streetWords } from '../js/geo.js';
+import { normalizeAddress, sameNumber, streetWords, navUrl, navAppUrl } from '../js/geo.js';
 
 test('al buscar, lo del local tras el número se quita (el buscador quiere el portal)', () => {
   assert.equal(normalizeAddress('CARRER COPERNIC, 75 LOCAL 2, BARCELONA'), 'CARRER COPERNIC, 75, Barcelona');
@@ -77,4 +77,30 @@ test('lo que va tras el número no se exige en el resultado del buscador', () =>
   assert.deepEqual(streetWords('Gran Via de les Corts Catalanes 670, Barcelona'), ['gran', 'corts', 'catalanes']);
   // Calle que empieza por número: al cortar no queda nombre, así que se mira la línea entera
   assert.deepEqual(streetWords('11 de Setembre 4, Sant Boi'), ['setembre']);
+});
+
+const P = { lat: 41.3851, lon: 2.1734 };
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1';
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+const PC = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+test('en el móvil el enlace abre la app de navegación, sin pasar por su web', () => {
+  // Waze: el mismo esquema en los dos sistemas.
+  assert.equal(navAppUrl('waze', P, 'driving', IPHONE), 'waze://?ll=41.3851,2.1734&navigate=yes');
+  assert.equal(navAppUrl('waze', P, 'driving', ANDROID), 'waze://?ll=41.3851,2.1734&navigate=yes');
+  // Google Maps: en Android arranca la navegación; en iPhone, su esquema propio.
+  assert.equal(navAppUrl('gmaps', P, 'driving', ANDROID), 'google.navigation:q=41.3851,2.1734&mode=d');
+  assert.equal(navAppUrl('gmaps', P, 'driving', IPHONE), 'comgooglemaps://?daddr=41.3851,2.1734&directionsmode=driving');
+});
+
+test('a pie siempre es Maps, aunque esté elegido Waze (Waze no guía a peatones)', () => {
+  assert.equal(navAppUrl('waze', P, 'walking', ANDROID), 'google.navigation:q=41.3851,2.1734&mode=w');
+  assert.equal(navAppUrl('waze', P, 'walking', IPHONE), 'comgooglemaps://?daddr=41.3851,2.1734&directionsmode=walking');
+  assert.match(navUrl('waze', P, 'walking'), /google\.com\/maps.*travelmode=walking/);
+});
+
+test('fuera del móvil no hay enlace a la app: se usa la web de siempre', () => {
+  assert.equal(navAppUrl('waze', P, 'driving', PC), '');
+  assert.equal(navUrl('waze', P), 'https://waze.com/ul?ll=41.3851,2.1734&navigate=yes');
+  assert.match(navUrl('gmaps', P), /^https:\/\/www\.google\.com\/maps\/dir\/\?api=1&destination=41\.3851,2\.1734&travelmode=driving&dir_action=navigate$/);
 });
