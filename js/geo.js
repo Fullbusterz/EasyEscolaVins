@@ -4,6 +4,8 @@
 // - Tiempos entre paradas y tráfico: Google Maps (Routes API), con la clave de la empresa. Ver más abajo.
 //   Esos tiempos no se guardan: las condiciones de Google no permiten almacenarlos.
 
+import { isNative, IOS_BUNDLE_ID, nativePosition } from './native.js';
+
 // Almacén (Sant Joan Despí): sin población escrita, el buscador prefiere lo que queda cerca.
 const BCN = { lat: 41.372, lon: 2.077 };
 // Zona de reparto: toda Cataluña (los buscadores solo devuelven resultados dentro). Antes era solo el área
@@ -270,7 +272,7 @@ export async function geocode(query, { kind = 'address' } = {}) {
 // Las condiciones de Google no permiten guardar sus tiempos: la app los tiene solo en memoria mientras dura
 // el día (ver app.js), nunca en el almacenamiento del móvil ni en las copias.
 
-// openrouteservice / Google sin tráfico dan tiempos de carretera vacía. Corrección orientativa para el área
+// Google sin tráfico da tiempos de carretera vacía. Corrección orientativa para el área
 // de Barcelona; la consulta con tráfico de la ruta elegida pone luego los tiempos de verdad.
 export function trafficFactor(date) {
   const h = date.getHours() + date.getMinutes() / 60;
@@ -323,7 +325,8 @@ async function googleError(res) {
 async function googlePost(path, body, fieldMask, key, ms) {
   const res = await get(`${GOOGLE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': fieldMask },
+    // En la app de iPhone, Google comprueba que la petición viene de ella (clave restringida a la app).
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': fieldMask, ...(isNative ? { 'X-Ios-Bundle-Identifier': IOS_BUNDLE_ID } : {}) },
     body: JSON.stringify(body),
   }, ms);
   if (!res.ok) throw await googleError(res);
@@ -375,11 +378,12 @@ export function guess(a, b, perKm) {
 /**
  * Tiempos sin tráfico de Google para los pares pedidos. `cells` es la lista de pares [i, j] (índices de
  * `origins` y `destinations`); sin ella se piden todos. Se agrupan por origen para gastar solo lo justo.
- * Devuelve [{ i, j, min, km }] con los minutos ya corregidos por la franja horaria de `departAt`.
+ * Devuelve [{ i, j, min, km }] con los minutos de carretera vacía (sin el factor de la hora: así valen todo
+ * el día y el factor se pone al usarlos).
  */
-export async function googleMatrix(origins, destinations, { key, departAt = new Date(), cells = null } = {}) {
+export async function googleMatrix(origins, destinations, { key, cells = null } = {}) {
   if (!key) throw new Error('Falta la clave de Google');
-  const f = trafficFactor(departAt instanceof Date ? departAt : new Date());
+  const f = 1;
   const byOrigin = new Map();
   const all = cells || origins.flatMap((_, i) => destinations.map((__, j) => [i, j]));
   for (const [i, j] of all) {
@@ -418,9 +422,10 @@ export async function travelMatrix(origins, destinations, { key, departAt } = {}
   if (key) {
     // Si el servicio de rutas falla (clave, cuota o cobertura), mejor una ruta aproximada que ninguna.
     try {
-      const got = await googleMatrix(origins, destinations, { key, departAt: depart });
+      const got = await googleMatrix(origins, destinations, { key });
       const mx = estimateMatrix(origins, destinations, depart);
-      for (const x of got) { mx.minutes[x.i][x.j] = x.min; mx.km[x.i][x.j] = x.km; }
+      const f = trafficFactor(depart);
+      for (const x of got) { mx.minutes[x.i][x.j] = x.min * f; mx.km[x.i][x.j] = x.km; }
       return { ...mx, source: 'google' };
     } catch (e) {
       return { ...estimateMatrix(origins, destinations, depart), warning: netWarning(e) };
@@ -493,7 +498,9 @@ export function navUrl(app, p) {
   return `https://waze.com/ul?ll=${p.lat},${p.lon}&navigate=yes`;
 }
 
-export function currentPosition(timeout = 8000) {
+export async function currentPosition(timeout = 8000) {
+  const native = await nativePosition(timeout);
+  if (native !== undefined) return native;
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(

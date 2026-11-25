@@ -1,10 +1,10 @@
 # Ruta Escolà
 
-App web para el móvil (se instala como una app normal) que ordena la ruta de reparto teniendo en cuenta el tráfico y los horarios de entrega de cada cliente.
+App para el móvil que ordena la ruta de reparto con el tráfico de Google Maps y los horarios de entrega de cada cliente. En iPhone es una app de verdad (TestFlight, ver [native/LEEME.md](native/LEEME.md)); en Android y en el ordenador, una web que se instala como una app.
 
 ## Cómo se usa
 
-1. **El día antes** (la ruta sale en el portal sobre las 17:30): **Traer la ruta del portal** la trae con direcciones, teléfonos y horarios. En Android lo hace la APK 1.3.0 (y puede avisarte cuando salga); en iPhone y en el ordenador, el marcador, que se guarda una vez igual que se instala la APK. Si no, pega la lista o añade las paradas a mano. Luego, **Optimizar ruta**.
+1. **El día antes** (la ruta sale en el portal sobre las 17:30): **Traer la ruta del portal** la trae con direcciones, teléfonos y horarios. En la app de iPhone abre el portal dentro y basta con pulsar «Traer mi ruta». En Android lo hace la APK 1.3.0 (y puede avisarte cuando salga). En Safari y en el ordenador, el marcador, que se guarda una vez igual que se instala la APK. Si no, pega la lista o añade las paradas a mano. Luego, **Optimizar ruta**.
    Al traerla, la app te pregunta **cuánto crees que tardarás** en cada parada nueva.
 2. **Recalcular**, cuando quieras (antes de salir o en plena ruta): vuelve a calcular el orden con el tráfico de ese momento.
 3. **Empezar ruta** el día del reparto y **Waze** te lleva a la primera parada. Al terminar cada parada pulsa **Siguiente** (la entrega se registra en la tablet; si te equivocas, **Deshacer**): recalcula desde donde estás y te da la siguiente.
@@ -32,26 +32,79 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 
 **Mapa y aparcar una vez para varias entregas.** El botón **Mapa** enseña las paradas numeradas en el orden de la ruta, el camino en furgoneta y los tramos a pie. Con **Agrupar entregas para aparcar** tocas en el mapa las entregas que harás desde un mismo sitio (eso lo decides tú, que sabes dónde suele haber hueco) y la app propone dónde dejar la furgoneta: la zona de carga y descarga con la que menos se anda (datos abiertos del Ayuntamiento de Barcelona) o el punto medio si no hay ninguna. Dice cuántos minutos a pie hay a cada una, cuánto rato estarás aparcado frente a los 30 min de SPRO y si alguien llegaría tarde. **Otro sitio** propone la siguiente zona; también puedes arrastrar la P o tocar un punto azul (zona de carga y descarga). **Aceptar** lo mete en la ruta: Waze te lleva al aparcamiento y las demás entregas del grupo se hacen a pie. **Quitar los aparcamientos** (en el mapa) los deshace todos de una vez.
 
-## Servicios de mapas (todos permiten uso de empresa)
+## Servicios de mapas
 
+- **Tiempos de conducción y tráfico: Google Maps** (Routes API), el mismo tráfico que ven Google Maps y Waze. Waze no deja que otras apps le pidan rutas, pero es de Google y comparte sus datos de tráfico. Para ir a la parada se sigue abriendo **Waze o Google Maps**, el que se elija en Ajustes.
 - **Direcciones:** geocodificador oficial del ICGC y, si no encuentra la dirección, CartoCiudad (IGN). Los dos son CC BY 4.0, así que se pueden guardar y compartir entre repartidores. Antes de buscar, la app traduce "Calle Mayor, Esplugas" a "Carrer Major, Esplugues". Si el resultado cae en otra población o en otra calle, la parada queda "Sin ubicar" hasta que la confirmes.
 - **Locales por su nombre:** OpenStreetMap (Nominatim), como mucho una petición por segundo.
-- **Tiempos de conducción:** openrouteservice, con una clave gratuita de account.heigit.org (500 consultas al día, la app gasta unas 20). Sin clave, la app ordena las paradas por distancia aproximada.
-- **Las claves son de cada repartidor.** Cada uno pone las suyas en Ajustes y se quedan en su móvil: ni «Pasar configuración» ni la copia de seguridad las llevan, y si un archivo antiguo las trae, al importarlo se ignoran.
 - **Mapa:** cartografía del ICGC (CC BY 4.0, con datos de OpenStreetMap fuera de Cataluña), dibujada con Leaflet (incluido en `vendor/`).
-- **Tráfico en tiempo real (opcional):** clave gratuita de TomTom (20.000 rutas al mes). Por cada cálculo, la app pide a TomTom la ruta elegida (de 1 a 3 consultas), corrige los tramos con atasco y vuelve a optimizar. Esos tiempos no se guardan, porque las condiciones de TomTom no lo permiten.
+
+### Cómo usa la app Google
+
+Se piden dos cosas, de precio muy distinto, y cada una para lo suyo:
+
+1. **Tiempos entre paradas, sin tráfico** (*Compute Route Matrix*, la tarifa más barata). No se piden todos con todos, que con 25 paradas son 676 tiempos: cada parada con sus 5 vecinas más cercanas y el almacén con todas, unos 150. Los que no se piden se estiman con la línea recta y los minutos por kilómetro que Google acaba de dar para esa zona. A esos tiempos se les pone un factor según la hora (la hora punta va más lenta).
+2. **La ruta elegida, con tráfico** (*Compute Routes*): una consulta con todas las paradas en orden. Con el tráfico previsto si se planifica para otra hora, y con el de ahora mismo al salir y en cada «Siguiente». Corrige los tramos con atasco y se vuelve a optimizar, con un máximo de 3 consultas.
+
+Los tiempos de Google **no se guardan en el móvil** porque sus condiciones no lo permiten. Se quedan en memoria mientras la app está abierta y se reutilizan en cada «Siguiente»: al añadir una parada solo se piden los suyos. En Ajustes → Más ajustes se ve cuánto ha consultado este mes ese móvil.
+
+### Poner la clave de Google (el encargado, una vez para todos)
+
+Los repartidores no tienen que hacer nada: la clave de la empresa va en `js/config.js` y todos los móviles la tienen al actualizar la app.
+
+1. En <https://console.cloud.google.com/> crea un proyecto («Ruta Escolà») y activa la **facturación** con la tarjeta de la empresa.
+2. *APIs y servicios* → *Biblioteca* → **Routes API** → *Habilitar*.
+3. *APIs y servicios* → *Credenciales* → *Crear credenciales* → *Clave de API*. En la clave:
+   - *Restricciones de aplicaciones*: **Sitios web**, con la dirección de la web acabada en `/*` (por ejemplo `https://fullbusterz.github.io/*`).
+   - *Restricciones de API*: solo **Routes API**.
+4. Para la app de iPhone, crea **otra clave** igual pero con *Restricciones de aplicaciones*: **Apps de iOS**, identificador `com.flixescola.ruta`. Una clave no puede estar restringida a la vez a webs y a apps.
+5. *APIs y servicios* → *Routes API* → *Cuotas*: pon un **tope diario**. Por ejemplo, 3.000 elementos de matriz al día y 1.500 rutas al día. Si un día se llega al tope, la app sigue con rutas aproximadas y lo avisa. Así nunca puede costar más de lo previsto.
+6. Pon la clave de la web en `GOOGLE_MAPS_KEY` y la del iPhone en `GOOGLE_MAPS_KEY_IOS`, en `js/config.js`. Sube `VERSION` y publica.
+7. En un móvil: Ajustes → Más ajustes → **Probar Google** debe decir «Funciona ✓» con los minutos del almacén a Sants.
+
+La clave de la web se ve en el código de la página, como la de cualquier mapa de Google en una web. Por eso tiene que estar restringida a la web, a Routes API y con tope. Si un repartidor tiene que usar otra clave, la pone en su móvil, en Ajustes → Más ajustes. Esa no viaja con «Pasar configuración» ni con las copias.
+
+### Cuánto cuesta
+
+Precios de Google de 2025, en dólares. Pueden cambiar, así que míralos en <https://developers.google.com/maps/billing-and-pricing/pricing> antes de decidir. Cada mes Google regala un número de consultas de cada tipo para toda la cuenta:
+
+| Lo que pide la app | Tarifa de Google | Gratis al mes | Después |
+|---|---|---|---|
+| Tiempos entre paradas (sin tráfico) | Compute Route Matrix *Essentials* | 10.000 elementos | ~5 $ cada 1.000 |
+| Ruta con tráfico | Compute Routes *Pro* | 5.000 rutas | ~10 $ cada 1.000 |
+
+Un repartidor con 20 paradas gasta más o menos **450 elementos y 35 rutas al día**: unos 10.000 elementos y 800 rutas al mes. Para toda la empresa, contando 22 días al mes:
+
+| Repartidores | Al mes (aprox.) |
+|---|---|
+| 1 | gratis |
+| 3 | ~100 $ |
+| 5 | ~200 $ |
+| 10 | ~500 $ |
+
+Lo que más gasta es volver a pedir los tiempos cuando el móvil cierra la app (sobre todo la web en iPhone; la app de iPhone se cierra mucho menos). El tope diario del paso 5 es la garantía de que no se pasa.
 
 ## Instalar en el móvil
 
-Tiene que estar publicada en una dirección https, por ejemplo con Netlify Drop o GitHub Pages: se sube la carpeta `app` tal cual. Luego, desde el móvil:
-- **Android (Chrome)**: menú ⋮, "Añadir a pantalla de inicio".
-- **iPhone (Safari)**: botón Compartir, "Añadir a pantalla de inicio".
+Tiene que estar publicada en una dirección https, por ejemplo con GitHub Pages: se sube la carpeta tal cual. Luego, desde el móvil:
+- **Android (Chrome)**: menú ⋮, "Añadir a pantalla de inicio", o la APK.
+- **iPhone: la app de verdad**, desde TestFlight. Es lo recomendable: trae la ruta del portal con un botón, no borra los datos y no hay marcador. Cómo publicarla: [native/LEEME.md](native/LEEME.md).
+- **iPhone sin la app (Safari)**: botón Compartir, "Añadir a pantalla de inicio".
 
-**En iPhone, icono o Safari.** Desde el icono la ruta entra con **Pegar la ruta** (iOS no deja que nada entre solo en una app instalada); en Safari entra sola al tocarla en el portal, pero Safari puede borrar los datos tras unos días sin abrir la app, así que conviene hacer copia de seguridad. La app detecta en cuál de los dos está y prepara el marcador para esa manera; se cambia a mano al guardarlo.
+**En iPhone, icono o Safari** (solo sin la app). Desde el icono la ruta entra con **Pegar la ruta**, porque iOS no deja que nada entre solo en una web instalada. En Safari entra sola al tocarla en el portal, pero Safari puede borrar los datos tras unos días sin abrir la app, así que conviene hacer copia de seguridad. La app detecta en cuál de los dos está y prepara el marcador para esa manera; se cambia a mano al guardarlo.
+
+## Letra grande
+
+Muchos repartidores tienen la letra del móvil grande. La app la sigue:
+
+- **iPhone:** usa el **«Tamaño del texto»** del iPhone (Ajustes → Pantalla y brillo → Tamaño del texto, y también los tamaños grandes de Accesibilidad). Safari no lo aplica a las webs, así que la app lo lee del sistema y agranda todo a la vez.
+- **En la app:** Ajustes → **Tamaño de la letra** (Normal, Grande, Muy grande, Enorme), encima del tamaño del móvil.
+- Con la letra grande, lo que iba en tres columnas pasa a ir en filas, los botones van uno debajo de otro y nada se sale de la pantalla. La letra es la del propio móvil (San Francisco en iPhone, Roboto en Android).
 
 ## Para desarrollo
 
 - `npm test`: tests del optimizador, del lector de listas y de los aparcamientos.
 - `node tools/dum-bcn.mjs <csv>`: regenera `data/dum-bcn.json` con el CSV de zonas de carga y descarga de Open Data BCN.
-- `node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat.
+- `GOOGLE_KEY=… node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat (con clave de Google, tiempos de verdad; sin ella, estimados).
+- `native/`: la app de iPhone (Capacitor). Ver [native/LEEME.md](native/LEEME.md).
 - Al publicar cambios, sube `VERSION` en `sw.js` y en `js/app.js`: los móviles verán "Hay una versión nueva · Actualizar".

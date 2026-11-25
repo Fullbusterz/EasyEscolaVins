@@ -6,7 +6,7 @@ const VERSION = '1.20.0';
 const CACHE = `ruta-escola-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest',
-  'js/app.js', 'js/store.js', 'js/parse.js', 'js/geo.js', 'js/planner.js', 'js/solver.js', 'js/portal.js', 'js/parking.js', 'js/hours.js', 'js/service.js', 'js/map.js', 'js/entry.js', 'js/config.js', 'js/textsize.js', 'data/dum-bcn.json',
+  'js/app.js', 'js/store.js', 'js/parse.js', 'js/geo.js', 'js/planner.js', 'js/solver.js', 'js/portal.js', 'js/parking.js', 'js/hours.js', 'js/service.js', 'js/map.js', 'js/entry.js', 'js/config.js', 'js/textsize.js', 'js/native.js', 'data/dum-bcn.json',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
 ];

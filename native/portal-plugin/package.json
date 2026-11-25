@@ -1,0 +1,9 @@
+{
+  "name": "ruta-portal-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Abre el portal de Escolà dentro de la app de iPhone y trae la ruta del repartidor, sin marcador ni copiar y pegar.",
+  "main": "index.js",
+  "files": ["index.js", "ios/Sources", "Package.swift"],
+  "capacitor": { "ios": { "src": "ios" } }
+}

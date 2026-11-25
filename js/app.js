@@ -1,6 +1,7 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, trafficLegs, haversineKm, onGoogleUsage } from './geo.js';
-import { GOOGLE_MAPS_KEY } from './config.js';
+import { GOOGLE_MAPS_KEY, GOOGLE_MAPS_KEY_IOS } from './config.js';
+import { isNative, plugin, tap, shareFileNative, setupNativeShell } from './native.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
 import { bigOrder } from './portal.js';
@@ -9,7 +10,7 @@ import { serviceFor, stopParts, measure, unloadFrom, extraTrips, toldOf, toldWhy
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { cleanEntry, goTo, entryDistanceM } from './entry.js';
-import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
+import { parsePortal, readPortalHash, bridgeUrl, portalReaderBody } from './portal.js';
 import * as store from './store.js';
 import { watchTextSize, watchBars, applyTextSize } from './textsize.js';
 
@@ -51,8 +52,6 @@ const I = {
 const DUM_MINUTES = 30;
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 const isAndroid = /Android/i.test(navigator.userAgent);
-// Dentro de la app de iPhone (la de verdad, no la web): ver native/ y LEEME.
-const isNative = (() => { try { return !!window.Capacitor?.isNativePlatform?.(); } catch { return false; } })();
 let measureBars = () => {};
 // Instalada en la pantalla de inicio. En iPhone eso aísla sus datos de Safari y nada de fuera puede
 // entrarle: el marcador no puede devolverle la ruta, así que ahí toca copiar y pegar.
@@ -255,8 +254,10 @@ function mapApi() {
 function settings() { return store.settings(); }
 function currentRoute() { return store.route(ui.date); }
 // La clave de Google: la de este móvil si alguien ha puesto una, si no la de la empresa (js/config.js).
-const googleKey = () => (settings().googleKey || GOOGLE_MAPS_KEY || '').trim();
-const companyKey = () => !!(GOOGLE_MAPS_KEY || '').trim();
+// En la app de iPhone, la suya (restringida a la app); si no hay, la de la web.
+const COMPANY_KEY = ((isNative && GOOGLE_MAPS_KEY_IOS) || GOOGLE_MAPS_KEY || '').trim();
+const googleKey = () => (settings().googleKey || COMPANY_KEY).trim();
+const companyKey = () => !!COMPANY_KEY;
 
 // Los tiempos entre paradas de Google se reutilizan en cada «Siguiente», pero solo en memoria: sus
 // condiciones no dejan guardarlos en el móvil. Si iOS cierra la app, se vuelven a pedir los que hagan falta.
@@ -919,7 +920,7 @@ function sheetBring() {
 
 // En Ajustes solo queda el acceso: lo demás vive en la hoja de arriba.
 function renderBridge() {
-  if (portalApp()) return ''; // con la APK ya se trae de un toque
+  if (portalApp() || portalNative()) return ''; // con la APK o la app de iPhone ya se trae de un toque
   if (isAndroid) {
     return `
   <h2 class="section-title">Traer la ruta del portal</h2>
@@ -1697,8 +1698,8 @@ const actions = {
   optimize: () => optimize(),
   recalc: () => (currentRoute().status === 'active' ? replanActive('Recalculada con el tráfico de ahora') : optimize({ recalc: true })),
   'start-route': () => startRoute(),
-  next: () => finishCurrent(),
-  parked: () => parkHere(),
+  next: () => { tap(); finishCurrent(); },
+  parked: () => { tap(); parkHere(); },
   postpone: () => {
     const r = currentRoute();
     if (ui.sheet) closeSheet();
@@ -1760,7 +1761,8 @@ const actions = {
   },
   'open-paste': () => openSheet({ kind: 'paste', text: '' }),
   // Traer la ruta del portal sin APK: abrir el portal, pegar lo que ha dejado el marcador y guardarlo.
-  'open-bring': () => openSheet({ kind: 'bring' }),
+  'open-bring': () => (portalNative() ? openNativePortal() : openSheet({ kind: 'bring' })),
+  'native-portal': () => openNativePortal(),
   'portal-open': () => { waitingPaste(true); setTimeout(renderSheet, 600); },
   'paste-route': () => pasteFromClipboard(),
   'bridge-open': () => { ui.bridgeOpen = true; render(); },
@@ -2023,7 +2025,10 @@ async function testGoogle() {
   render();
 }
 
-function shareFile(json, name, title) {
+async function shareFile(json, name, title) {
+  // En la app de iPhone, con la hoja de compartir del sistema (Drive, WhatsApp, Archivos…).
+  const native = await shareFileNative(json, name, title).catch(() => false);
+  if (native !== null) return native;
   const file = new File([json], name, { type: 'application/json' });
   if (navigator.canShare?.({ files: [file] })) return navigator.share({ files: [file], title }).then(() => true, () => false);
   const a = document.createElement('a');
@@ -2063,7 +2068,8 @@ function applyUpdate() {
 }
 
 function registerServiceWorker() {
-  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  // La app de iPhone lleva la web dentro y se actualiza con la App Store / TestFlight.
+  if (isNative || !('serviceWorker' in navigator) || location.protocol === 'file:') return;
   // Solo se recarga al cambiar de versión, no la primera vez que el service worker toma el control.
   const hadController = !!navigator.serviceWorker.controller;
   let reloading = false;
@@ -2252,7 +2258,20 @@ async function pasteFromClipboard() {
 
 // La app de iPhone trae la ruta ella misma: abre el portal dentro y la lee (ver native/). Sin marcador.
 function portalNative() {
-  try { return isNative && !!window.Capacitor?.Plugins?.Portal; } catch { return false; }
+  return !!plugin('Portal');
+}
+
+// El portal dentro de la app: entras (una vez), «Traer mi ruta» y la ruta llega aquí, sin marcador.
+async function openNativePortal() {
+  const portal = plugin('Portal');
+  if (!portal) return;
+  try {
+    const res = await portal.open({ url: PORTAL_URL, reader: portalReaderBody() });
+    // Viene del portal con la sesión del repartidor, por la propia app: es de fiar.
+    if (res?.text) receive({ text: String(res.text).slice(0, 100000), trusted: true });
+  } catch (e) {
+    toast(e?.message || 'No se ha podido abrir el portal', 5000);
+  }
 }
 
 function portalApp() {
@@ -2292,6 +2311,7 @@ function receive({ text, trusted }) {
 
 // ---------- Arranque ----------
 
+setupNativeShell();
 store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();

@@ -11,3 +11,9 @@
 //   - con un tope de consultas al día (Cuotas), para que nunca pueda costar más de lo previsto.
 // Si se deja vacía, cada móvil puede poner la suya en Ajustes → Más ajustes.
 export const GOOGLE_MAPS_KEY = '';
+
+// GOOGLE_MAPS_KEY_IOS: la clave para la app de iPhone (native/). Una clave de Google solo puede estar
+// restringida a webs o a apps, no a las dos cosas, así que la app lleva la suya, restringida a apps de iOS
+// con el identificador com.flixescola.ruta (y también a «Routes API» y con tope de consultas).
+// Si se deja vacía, la app de iPhone usa la de arriba (que entonces no puede estar restringida a la web).
+export const GOOGLE_MAPS_KEY_IOS = '';

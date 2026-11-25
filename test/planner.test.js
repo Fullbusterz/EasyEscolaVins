@@ -85,8 +85,11 @@ test('con tráfico: un atasco en un tramo cambia el orden, y los tiempos con tr�
   assert.ok(routeCalls.length >= 1 && routeCalls.length <= 3, `${routeCalls.length} consultas`);
   assert.equal(p1.source, 'traffic');
   assert.ok(p1.live);
-  // En la memoria solo quedan los de la matriz (sin tráfico), nunca los de la ruta.
+  // En la memoria solo quedan los de la matriz (carretera vacía), nunca los de la ruta con tráfico.
   assert.ok(Object.values(p1.pairs).every((x) => x.src === 'google' && x.m < 60));
+  const mx = (a, b) => Math.hypot(a.lat - b.lat, a.lon - b.lon) * 1000;
+  const ab = Object.entries(p1.pairs).find(([k]) => k.startsWith('a@') && k.includes('>b@'))[1];
+  assert.ok(Math.abs(ab.m - mx(stops[0], stops[1])) < 0.1, 'sin el factor de la hora');
 });
 
 test('la hora de salida solo se manda si es futura y no se pide el tráfico de ahora', async () => {
@@ -127,7 +130,7 @@ test('con muchas paradas solo se piden los pares entre vecinas: mucho menos que 
   const p = await computePlan({ ...base, stops: many });
   assert.equal(p.order.length, 25);
   assert.ok(elements < 26 * 26 / 2, `${elements} tiempos pedidos`);
-  assert.ok(elements >= 25 + 25 * 6, 'cada parada con sus vecinas, y la salida con todas');
+  assert.ok(elements >= 25 + 25 * 5, 'cada parada con sus vecinas, y la salida con todas');
   // La segunda vez no se pide nada: todo está en memoria.
   const before = elements;
   await computePlan({ ...base, stops: many, pairs: p.pairs });
@@ -144,13 +147,26 @@ test('los pares pedidos: todos con todos con pocas paradas, vecinas con muchas',
   assert.ok(!w.some(([i, j]) => i === 1 && j === many.length));
 });
 
-test('en ruta, desde donde estás: se pregunta a las más cercanas y ese tramo no se guarda', async () => {
+test('en ruta, desde donde estás: no se gasta matriz en ese tramo, lo da la consulta con tráfico', async () => {
+  reset();
+  const p1 = await computePlan({ ...base, stops });
   reset();
   const here = { lat: 41.381, lon: 2.081 };
-  const p = await computePlan({ ...base, from: here, stops });
+  const p = await computePlan({ ...base, from: here, stops, pairs: p1.pairs, live: true });
+  assert.equal(elements, 0, 'todo lo demás ya estaba en memoria');
+  assert.equal(routeCalls.length >= 1, true);
   assert.ok(Object.keys(p.pairs).every((k) => !k.startsWith('null')));
-  assert.ok(matrixCalls.some(([o]) => o === 1));
   assert.equal(p.order.length, 2);
+  assert.equal(p.legs[0].drive, 5, 'el primer tramo es el de la ruta con tráfico');
+});
+
+test('los tiempos de la mañana valen por la tarde: el factor de la hora se pone al usarlos', async () => {
+  reset();
+  const p1 = await computePlan({ ...base, stops, key: 'k', departAt: night });
+  const rush = new Date('2026-11-03T08:00:00'); // factor 1,45
+  const p2 = await computePlan({ ...base, stops, departAt: rush, pairs: p1.pairs, maxAgeMin: 1e9 });
+  assert.equal(elements, 6, 'no se vuelve a pedir nada');
+  assert.equal(p2.order.length, 2);
 });
 
 test('una ruta de más de 27 puntos se pide a trozos y los tramos casan', async () => {

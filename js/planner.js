@@ -18,10 +18,8 @@ const nodeKey = (p, id) => `${id}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
 const pairKey = (a, b) => `${a}>${b}`;
 
 // Con pocas paradas se piden todos los pares (son pocos); con más, cada parada con sus vecinas.
-export const FULL_UP_TO = 8;
-export const NEIGHBORS = 6;
-// Desde donde estás (en ruta), a cuántas de las paradas pendientes más cercanas se pregunta.
-export const FROM_NEAREST = 8;
+export const FULL_UP_TO = 6;
+export const NEIGHBORS = 5;
 
 // Índices de `list` más cercanos a p (en línea recta), sin contar `skip`.
 const nearest = (p, list, k, skip = -1) => list.map((q, idx) => ({ idx, d: haversineKm(p, q) }))
@@ -52,13 +50,14 @@ export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToD
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
  * key: clave de Google. Sin ella se estima por distancia. live: tráfico de ahora (si no, el previsto).
  * pairs: tiempos entre paradas ya pedidos ({ "idA@lat,lon>idB@lat,lon": { m, km, at, src } }), en memoria.
- * maxAgeMin: antigüedad máxima de esos tiempos para reutilizarlos.
+ * Son de carretera vacía (sin la hora): el factor de la franja horaria se pone al usarlos.
+ * maxAgeMin: antigüedad máxima de esos tiempos para reutilizarlos (las calles no cambian en un día).
  * parking: aparcamientos aceptados [{ids, lat, lon}]: entre paradas del mismo se va a pie pasando por la furgoneta.
  * parkedAt: índice del aparcamiento donde está ahora la furgoneta (si se sale andando desde from).
  * fixedOrder: ids en el orden que ha puesto el repartidor. Se respeta y solo se calculan las horas; las paradas
  * que no estén (añadidas después) van al final y los ids que ya no existen se ignoran.
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, key, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
+export async function computePlan({ from, stops, depot, startMin, departAt, key, live, pairs = {}, maxAgeMin = 12 * 60, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
   if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs: {} };
   const n = stops.length;
   const depart = departAt instanceof Date ? departAt : new Date();
@@ -76,9 +75,9 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
   let warning, source = 'estimate';
   if (key) {
     const want = wantedPairs(stops, { returnToDepot });
-    // Salida: desde el almacén se piden todas (y se guardan); desde otro sitio, las más cercanas y no se guardan.
-    const fromRow = fromIsDepot ? stops.map((_, i) => [0, i + 1])
-      : nearest(from, stops, n <= FULL_UP_TO ? n : FROM_NEAREST).map((i) => [0, i + 1]);
+    // Salida: desde el almacén se piden todas (y se quedan para luego). Desde donde estás (en ruta) no se pide
+    // nada: se estima, y la consulta con tráfico de la ruta elegida da luego el tiempo exacto de ese tramo.
+    const fromRow = fromIsDepot ? stops.map((_, i) => [0, i + 1]) : [];
     const missing = [];
     for (const [i, j] of [...fromRow, ...want]) {
       const k = keys[i] && pairKey(keys[i], keys[j]);
@@ -88,7 +87,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
     try {
       if (missing.length) {
         const pts = Array.from({ length: n + 2 }, (_, i) => point(i));
-        const got = await googleMatrix(pts, pts, { key, departAt: depart, cells: missing });
+        const got = await googleMatrix(pts, pts, { key, cells: missing });
         for (const x of got) {
           const v = { m: x.min, km: x.km, at: now, src: 'google' };
           known.set(`${x.i},${x.j}`, v);
@@ -106,15 +105,16 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
     const [i, j] = ij.split(',').map(Number);
     return { min: v.m, km: haversineKm(point(i), point(j)) };
   }));
+  // Lo de Google es carretera vacía: la hora de salida pone el factor de tráfico de esa franja.
   const f = trafficFactor(depart);
   const minutes = (i, j) => {
     if (i === j) return { m: 0, km: 0 };
-    const hit = known.get(`${i},${j}`);
-    if (hit) return hit;
+    let hit = known.get(`${i},${j}`);
     // De una parada al almacén: lo mismo que del almacén a ella, si se sabe (casi siempre es la misma vía).
-    if (j === n + 1 && known.has(`0,${i}`) && fromIsDepot) return known.get(`0,${i}`);
+    if (!hit && j === n + 1 && fromIsDepot) hit = known.get(`0,${i}`);
+    if (hit) return { m: hit.m * f, km: hit.km };
     const a = point(i), b = point(j);
-    return { m: perKm ? guess(a, b, perKm) : sameSpot(a, b) ? 0 : estimate(a, b) * f, km: haversineKm(a, b) * 1.4 };
+    return { m: perKm ? guess(a, b, perKm) * f : sameSpot(a, b) ? 0 : estimate(a, b) * f, km: haversineKm(a, b) * 1.4 };
   };
 
   // A pie: dentro de un aparcamiento, de la entrega a la furgoneta y de ahí a la siguiente (sin coche);
