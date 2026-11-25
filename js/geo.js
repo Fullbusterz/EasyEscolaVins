@@ -1,9 +1,8 @@
 // Direcciones y tiempos de viaje, solo con servicios que permiten este uso (de empresa) y guardar resultados:
 // - Direcciones: ICGC (Institut Cartogràfic i Geològic de Catalunya) y, si no, CartoCiudad (IGN). Ambos CC BY 4.0.
 //   Para buscar un local por su nombre: OpenStreetMap (Nominatim), con calma (1 petición/s).
-// - Tiempos entre paradas: openrouteservice (clave gratuita), con un factor de tráfico por franja horaria.
-// - Tráfico real (opcional, clave de TomTom): una sola consulta por ruta corrige los tramos elegidos.
-//   Esos tiempos no se guardan: las condiciones de TomTom no permiten almacenarlos.
+// - Tiempos entre paradas y tráfico: Google Maps (Routes API), con la clave de la empresa. Ver más abajo.
+//   Esos tiempos no se guardan: las condiciones de Google no permiten almacenarlos.
 
 // Almacén (Sant Joan Despí): sin población escrita, el buscador prefiere lo que queda cerca.
 const BCN = { lat: 41.372, lon: 2.077 };
@@ -255,9 +254,24 @@ export async function geocode(query, { kind = 'address' } = {}) {
   return tried.slice(0, 5);
 }
 
-// ---------- Tiempos de viaje ----------
+// ---------- Tiempos de viaje: Google Maps ----------
+//
+// Los tiempos salen de Google (Routes API), que es el mismo tráfico que ven Google Maps y Waze. Se usan dos
+// consultas distintas, de precio muy distinto, y cada una para lo suyo:
+//
+//   matriz      Tiempos entre paradas SIN tráfico (la tarifa más barata). Se pide solo lo que el optimizador
+//               necesita: de cada parada a sus vecinas más cercanas (ver planner.js). Los pares que no se
+//               piden se estiman con la línea recta, ajustada con lo que Google ha dicho de los que sí.
+//               Se corrige con un factor por franja horaria, como antes.
+//   ruta        La ruta elegida, de punta a punta, CON tráfico (el previsto para la hora de salida o el de
+//               ahora mismo). Una sola consulta por cálculo: corrige los tramos con atasco y se vuelve a
+//               optimizar (como hacía TomTom).
+//
+// Las condiciones de Google no permiten guardar sus tiempos: la app los tiene solo en memoria mientras dura
+// el día (ver app.js), nunca en el almacenamiento del móvil ni en las copias.
 
-// openrouteservice da tiempos de carretera vacía. Corrección orientativa para el área de Barcelona.
+// openrouteservice / Google sin tráfico dan tiempos de carretera vacía. Corrección orientativa para el área
+// de Barcelona; la consulta con tráfico de la ruta elegida pone luego los tiempos de verdad.
 export function trafficFactor(date) {
   const h = date.getHours() + date.getMinutes() / 60;
   const weekend = date.getDay() === 0 || date.getDay() === 6;
@@ -274,17 +288,148 @@ export function estimate(a, b) {
   return (haversineKm(a, b) * 1.4 / 25) * 60 + 3;
 }
 
-// Devuelve { minutes[o][d], km[o][d], source }.
-export async function travelMatrix(origins, destinations, { orsKey, departAt } = {}) {
+const GOOGLE = 'https://routes.googleapis.com';
+// Cuántos elementos (origen × destino) caben en una consulta de matriz sin tráfico.
+const MATRIX_MAX = 625;
+// Puntos intermedios que admite una ruta (más la salida y la llegada).
+const ROUTE_MAX_INTERMEDIATES = 25;
+
+// Lo que se ha gastado de Google, para enseñarlo en Ajustes (lo apunta app.js en el móvil).
+let usageHook = () => {};
+export function onGoogleUsage(fn) { usageHook = typeof fn === 'function' ? fn : () => {}; }
+
+const latLng = (p) => ({ location: { latLng: { latitude: +Number(p.lat).toFixed(6), longitude: +Number(p.lon).toFixed(6) } } });
+const seconds = (d) => { const m = /^(\d+(?:\.\d+)?)s$/.exec(String(d ?? '')); return m ? +m[1] : null; };
+
+// Google devuelve los errores como { error } o, en la matriz, como [{ error }].
+async function googleError(res) {
+  let msg = '', status = '';
+  try {
+    const body = await res.json();
+    const e = (Array.isArray(body) ? body[0] : body)?.error || {};
+    msg = String(e.message || ''); status = String(e.status || '');
+  } catch { /* sin cuerpo */ }
+  if (res.status === 429 || status === 'RESOURCE_EXHAUSTED') return new Error('Se ha gastado la cuota de Google de hoy: ruta aproximada');
+  if (res.status === 400 && /api key|API_KEY/i.test(msg + status)) return new Error('La clave de Google no es válida');
+  if (res.status === 403 || status === 'PERMISSION_DENIED') {
+    return new Error(/referer|referrer|blocked/i.test(msg) ? 'La clave de Google no acepta esta web: revisa sus restricciones'
+      : /not been used|disabled|enable/i.test(msg) ? 'Falta activar «Routes API» en la cuenta de Google'
+      : /billing/i.test(msg) ? 'La cuenta de Google no tiene la facturación activada'
+      : 'La clave de Google no tiene permiso para calcular rutas');
+  }
+  return new Error(`Google ${res.status}${msg ? `: ${msg.slice(0, 80)}` : ''}`);
+}
+
+async function googlePost(path, body, fieldMask, key, ms) {
+  const res = await get(`${GOOGLE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': fieldMask },
+    body: JSON.stringify(body),
+  }, ms);
+  if (!res.ok) throw await googleError(res);
+  return res.json();
+}
+
+// Una consulta de matriz sin tráfico: origins × destinations (como mucho MATRIX_MAX elementos).
+async function googleMatrixChunk(origins, destinations, key) {
+  const data = await googlePost('/distanceMatrix/v2:computeRouteMatrix', {
+    origins: origins.map((p) => ({ waypoint: latLng(p) })),
+    destinations: destinations.map((p) => ({ waypoint: latLng(p) })),
+    travelMode: 'DRIVE',
+    routingPreference: 'TRAFFIC_UNAWARE',
+  }, 'originIndex,destinationIndex,duration,distanceMeters,condition', key, 20000);
+  usageHook({ elements: origins.length * destinations.length });
+  const out = [];
+  for (const el of Array.isArray(data) ? data : []) {
+    if (el?.error) throw new Error(`Google: ${String(el.error.message || 'error').slice(0, 80)}`);
+    const s = seconds(el?.duration);
+    if (el?.condition === 'ROUTE_NOT_FOUND' || s == null) continue;
+    out.push({ o: el.originIndex ?? 0, d: el.destinationIndex ?? 0, min: s / 60, km: (el.distanceMeters ?? 0) / 1000 });
+  }
+  return out;
+}
+
+// Varias consultas a la vez, pero no todas: con poca cobertura es mejor ir de pocas en pocas.
+async function inBatches(jobs, n = 4) {
+  const out = [];
+  for (let i = 0; i < jobs.length; i += n) out.push(...(await Promise.all(jobs.slice(i, i + n).map((f) => f()))).flat());
+  return out;
+}
+
+/**
+ * Minutos por kilómetro en línea recta según lo que Google acaba de decir: con eso se estiman los pares que no
+ * se han pedido. Mediana, para que un par raro (un puente, una salida de ronda) no lo tuerza.
+ */
+export function calibrate(samples) {
+  const r = samples.filter((x) => x.km > 0.3 && x.min > 0).map((x) => x.min / x.km).sort((a, b) => a - b);
+  if (r.length < 3) return null;
+  return Math.min(8, Math.max(1.2, r[Math.floor(r.length / 2)]));
+}
+
+/** Estimación de un par sin consulta: la línea recta a los minutos/km de esa ruta, o la prudente de siempre. */
+export function guess(a, b, perKm) {
+  if (sameSpot(a, b)) return 0;
+  return perKm ? Math.max(1.5, haversineKm(a, b) * perKm) : estimate(a, b);
+}
+
+/**
+ * Tiempos sin tráfico de Google para los pares pedidos. `cells` es la lista de pares [i, j] (índices de
+ * `origins` y `destinations`); sin ella se piden todos. Se agrupan por origen para gastar solo lo justo.
+ * Devuelve [{ i, j, min, km }] con los minutos ya corregidos por la franja horaria de `departAt`.
+ */
+export async function googleMatrix(origins, destinations, { key, departAt = new Date(), cells = null } = {}) {
+  if (!key) throw new Error('Falta la clave de Google');
+  const f = trafficFactor(departAt instanceof Date ? departAt : new Date());
+  const byOrigin = new Map();
+  const all = cells || origins.flatMap((_, i) => destinations.map((__, j) => [i, j]));
+  for (const [i, j] of all) {
+    if (sameSpot(origins[i], destinations[j])) continue;
+    if (!byOrigin.has(i)) byOrigin.set(i, new Set());
+    byOrigin.get(i).add(j);
+  }
+  if (!byOrigin.size) return [];
+  const jobs = [];
+  // Sin lista de pares (todos con todos) va en bloques de varias filas; con lista, una fila por origen.
+  if (!cells) {
+    const os = [...byOrigin.keys()];
+    const ds = destinations.map((_, j) => j);
+    const rows = Math.max(1, Math.floor(MATRIX_MAX / ds.length));
+    for (let k = 0; k < os.length; k += rows) {
+      const part = os.slice(k, k + rows);
+      jobs.push(async () => (await googleMatrixChunk(part.map((i) => origins[i]), ds.map((j) => destinations[j]), key))
+        .map((x) => ({ i: part[x.o], j: ds[x.d], min: x.min * f, km: x.km })));
+    }
+  } else {
+    for (const [i, set] of byOrigin) {
+      const ds = [...set];
+      for (let k = 0; k < ds.length; k += MATRIX_MAX) {
+        const part = ds.slice(k, k + MATRIX_MAX);
+        jobs.push(async () => (await googleMatrixChunk([origins[i]], part.map((j) => destinations[j]), key))
+          .map((x) => ({ i, j: part[x.d], min: x.min * f, km: x.km })));
+      }
+    }
+  }
+  return inBatches(jobs);
+}
+
+// Devuelve { minutes[o][d], km[o][d], source }: todos con todos. Sin clave (o si Google falla), estimación.
+export async function travelMatrix(origins, destinations, { key, departAt } = {}) {
   const depart = departAt instanceof Date ? departAt : new Date();
-  if (orsKey) {
+  if (key) {
     // Si el servicio de rutas falla (clave, cuota o cobertura), mejor una ruta aproximada que ninguna.
-    try { return await orsMatrix(origins, destinations, orsKey, depart); } catch (e) {
-      return { ...estimateMatrix(origins, destinations, depart), warning: e.name === 'TimeoutError' || e.name === 'TypeError' ? 'Sin conexión con el servicio de rutas' : e.message };
+    try {
+      const got = await googleMatrix(origins, destinations, { key, departAt: depart });
+      const mx = estimateMatrix(origins, destinations, depart);
+      for (const x of got) { mx.minutes[x.i][x.j] = x.min; mx.km[x.i][x.j] = x.km; }
+      return { ...mx, source: 'google' };
+    } catch (e) {
+      return { ...estimateMatrix(origins, destinations, depart), warning: netWarning(e) };
     }
   }
   return estimateMatrix(origins, destinations, depart);
 }
+
+export const netWarning = (e) => (e?.name === 'TimeoutError' || e?.name === 'TypeError' ? 'Sin conexión con Google' : e?.message || 'Google no ha respondido');
 
 function estimateMatrix(origins, destinations, depart) {
   return {
@@ -294,58 +439,50 @@ function estimateMatrix(origins, destinations, depart) {
   };
 }
 
-async function orsMatrix(origins, destinations, key, depart) {
-  // Cada punto se manda una sola vez aunque sea origen y destino.
-  const pts = [], index = new Map();
-  const idx = (p) => {
-    const k = `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`;
-    if (!index.has(k)) { index.set(k, pts.length); pts.push([+p.lon.toFixed(6), +p.lat.toFixed(6)]); }
-    return index.get(k);
-  };
-  const sources = origins.map(idx), dests = destinations.map(idx);
-  const res = await get('https://api.heigit.org/openrouteservice/v2/matrix/driving-car', {
-    method: 'POST',
-    headers: { Authorization: key, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ locations: pts, sources, destinations: dests, metrics: ['duration', 'distance'], units: 'km' }),
-  });
-  if (res.status === 401 || res.status === 403) throw new Error('La clave de openrouteservice no es válida o se ha gastado la cuota de hoy');
-  if (res.status === 429) throw new Error('Demasiadas consultas seguidas a openrouteservice: espera un minuto');
-  if (!res.ok) throw new Error(`openrouteservice ${res.status}`);
-  const data = await res.json();
-  const f = trafficFactor(depart);
-  return {
-    minutes: data.durations.map((row, i) => row.map((s, j) => (s == null ? estimate(origins[i], destinations[j]) * f : (s / 60) * f))),
-    km: data.distances.map((row, i) => row.map((d, j) => (d == null ? haversineKm(origins[i], destinations[j]) * 1.4 : d))),
-    source: 'ors',
-  };
-}
-
-function sameSpot(a, b) {
+export function sameSpot(a, b) {
   return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5;
 }
 
-function localIso(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
-}
-
 /**
- * Tiempos con tráfico de TomTom para una ruta ya ordenada: points = [salida, parada1, ..., (almacén)].
- * Una sola consulta (hasta 150 puntos). Devuelve los minutos de cada tramo, o null si no se pudo.
+ * Tiempos con tráfico de Google para una ruta ya ordenada: points = [salida, parada1, ..., (almacén)].
+ * Una consulta por cada 27 puntos. Devuelve los minutos de cada tramo, o null si no se pudo.
  * live: tráfico de ahora (al salir y en ruta); si no, el previsto para departAt.
+ * Una clave mala o sin permiso lanza el error (hay que decírselo a alguien); lo demás devuelve null.
  */
 export async function trafficLegs(points, { key, departAt, live }) {
   if (!key || points.length < 2) return null;
-  const path = points.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(':');
-  const when = live || !(departAt > new Date()) ? 'now' : localIso(departAt);
-  const res = await get(`https://api.tomtom.com/routing/1/calculateRoute/${path}/json?key=${encodeURIComponent(key)}` +
-    `&traffic=true&departAt=${encodeURIComponent(when)}&routeType=fastest&travelMode=car&routeRepresentation=summaryOnly`, {}, 15000);
-  if (res.status === 401 || res.status === 403) throw new Error('La clave de TomTom no es válida');
-  if (!res.ok) return null;
-  const data = await res.json();
-  const legs = data.routes?.[0]?.legs;
-  if (!legs || legs.length !== points.length - 1) return null;
-  return legs.map((l) => l.summary.travelTimeInSeconds / 60);
+  const step = ROUTE_MAX_INTERMEDIATES + 1;
+  const chunks = [];
+  for (let k = 0; k < points.length - 1; k += step) chunks.push(points.slice(k, k + step + 1));
+  // Google solo acepta una hora de salida futura; para «ahora» no se pone.
+  const future = !live && departAt instanceof Date && departAt.getTime() > Date.now() + 60000;
+  const legs = [];
+  for (const pts of chunks) {
+    let data;
+    try {
+      data = await googlePost('/directions/v2:computeRoutes', {
+        origin: latLng(pts[0]),
+        destination: latLng(pts[pts.length - 1]),
+        intermediates: pts.slice(1, -1).map(latLng),
+        travelMode: 'DRIVE',
+        routingPreference: 'TRAFFIC_AWARE',
+        ...(future ? { departureTime: departAt.toISOString() } : {}),
+        computeAlternativeRoutes: false,
+      }, 'routes.legs.duration,routes.legs.distanceMeters', key, 15000);
+    } catch (e) {
+      if (/clave|permiso|activar|facturación/.test(e.message)) throw e;
+      return null;
+    }
+    usageHook({ routes: 1 });
+    const ls = data?.routes?.[0]?.legs;
+    if (!Array.isArray(ls) || ls.length !== pts.length - 1) return null;
+    for (const l of ls) {
+      const s = seconds(l.duration);
+      if (s == null) return null;
+      legs.push(s / 60);
+    }
+  }
+  return legs.length === points.length - 1 ? legs : null;
 }
 
 // ---------- Navegación ----------

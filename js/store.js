@@ -14,8 +14,10 @@ export const DEFAULT_DEPOT = {
 
 const empty = () => ({
   settings: {
-    orsKey: '',
-    tomtomKey: '',
+    // Clave de Google de este móvil. Normalmente vacía: se usa la de la empresa (js/config.js).
+    googleKey: '',
+    // Tamaño de la letra de la app, encima del que tenga el móvil (1 = el del móvil).
+    textScale: 1,
     depot: DEFAULT_DEPOT,
     shiftStart: '07:30',
     // Descarga: lo fijo de una entrega una vez aparcado. Lo que suman las cajas (viajes con la carretilla)
@@ -54,6 +56,11 @@ function load() {
       if (clean) clients[clean.key] = clean;
     }
     const settings = { ...base.settings, ...(data.settings || {}) };
+    // 26/11/2026: los tiempos y el tráfico pasan a ser de Google. Las claves de openrouteservice y TomTom, y
+    // los tiempos entre paradas que se guardaban de openrouteservice, ya no sirven.
+    delete settings.orsKey; delete settings.tomtomKey;
+    for (const r of Object.values(data.routes || {})) if (r && typeof r === 'object') r.pairs = {};
+    if (!(settings.textScale >= 0.85 && settings.textScale <= 2)) settings.textScale = 1;
     // 04/11/2026: los horarios, que estaban apagados (1.9.0), vuelven encendidos y con margen.
     if (data.settings?.hoursV !== 2) Object.assign(settings, { useWindows: true, hoursV: 2 });
     // 09/11/2026: el tiempo de una entrega pasa a contar las cajas (los viajes con la carretilla) y lo que
@@ -292,9 +299,9 @@ export function exportClients() {
   return JSON.stringify({ app: 'ruta-escola', version: 1, exportedAt: new Date().toISOString(), clients: state.clients }, null, 2);
 }
 
-// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves (son personales).
+// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves (son personales) ni el gasto de Google.
 export function exportBackup() {
-  const { tomtomKey, orsKey, ...rest } = state.settings;
+  const { googleKey, tomtomKey, orsKey, usage, ...rest } = state.settings;
   const routes = Object.fromEntries(Object.entries(state.routes).map(([d, r]) => [d, { ...r, pairs: {} }]));
   return JSON.stringify({ app: 'ruta-escola', kind: 'backup', version: 2, exportedAt: new Date().toISOString(), settings: rest, clients: state.clients, routes });
 }

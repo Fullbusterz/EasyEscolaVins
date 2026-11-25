@@ -76,7 +76,7 @@ test('aprende el tiempo de descarga: con 3 entregas usa la mediana', () => {
 });
 
 test('copia de seguridad: sin claves, y al restaurar recupera clientes y días que faltan', () => {
-  store.setSettings({ tomtomKey: 'secreto', orsKey: 'secreto2' });
+  store.setSettings({ googleKey: 'secreto' });
   store.rememberClient({ name: 'Celler Copia', address: 'C/ Major 1', windows: [[540, 600]] });
   const r = store.route('2099-12-24');
   r.stops.push({ id: 'x1', name: 'Celler Copia', address: 'C/ Major 1', lat: 41.3, lon: 2.1, windows: [[540, 600]], service: 10, done: true, doneAt: 5 });
@@ -92,25 +92,24 @@ test('copia de seguridad: sin claves, y al restaurar recupera clientes y días q
 });
 
 test('pasar configuración: almacén y horario, nunca las claves; al importar solo se aceptan valores válidos', () => {
-  store.setSettings({ orsKey: 'eyJvcnMiOiJjbGF2ZSJ9abc', tomtomKey: 'TomTomKey12345678', shiftStart: '07:00' });
+  store.setSettings({ googleKey: 'AIzaMiClaveDeGoogle123', shiftStart: '07:00' });
   const text = store.exportConfig();
   const cfg = JSON.parse(text);
   assert.equal(cfg.kind, 'config');
-  assert.ok(!text.includes('eyJvcnMiOiJjbGF2ZSJ9abc') && !text.includes('TomTomKey12345678'), 'el archivo no lleva las claves');
-  store.setSettings({ orsKey: 'MiClaveDeRutas123', tomtomKey: '', shiftStart: '07:30' });
+  assert.ok(!text.includes('AIzaMiClaveDeGoogle123'), 'el archivo no lleva las claves');
+  store.setSettings({ googleKey: 'MiClaveDeRutas123', shiftStart: '07:30' });
   const applied = store.applyConfig(cfg.settings);
   assert.deepEqual(applied, ['almacén', 'hora de inicio']);
-  assert.equal(store.settings().orsKey, 'MiClaveDeRutas123');
+  assert.equal(store.settings().googleKey, 'MiClaveDeRutas123');
   assert.equal(store.settings().shiftStart, '07:00');
   // Un archivo antiguo con las claves de otro: se ignoran, no pisan ni rellenan las tuyas.
-  assert.deepEqual(store.applyConfig({ orsKey: 'ClaveDeOtroRepartidor1', tomtomKey: 'TomTomDeOtro12345' }), []);
-  assert.equal(store.settings().orsKey, 'MiClaveDeRutas123');
-  assert.equal(store.settings().tomtomKey, '');
-  store.setSettings({ orsKey: 'eyJvcnMiOiJjbGF2ZSJ9abc' });
+  assert.deepEqual(store.applyConfig({ orsKey: 'ClaveDeOtroRepartidor1', googleKey: 'AIzaDeOtro12345' }), []);
+  assert.equal(store.settings().googleKey, 'MiClaveDeRutas123');
+  store.setSettings({ googleKey: 'AIzaMiClaveDeGoogle123' });
   // Archivo manipulado: nada raro entra en los ajustes
-  const evil = store.applyConfig({ orsKey: '<script>alert(1)</script>', depot: { name: '<b>x</b>', lat: 'a', lon: 2 }, shiftStart: '99', nav: 'javascript:', service: 9999 });
+  const evil = store.applyConfig({ googleKey: '<script>alert(1)</script>', depot: { name: '<b>x</b>', lat: 'a', lon: 2 }, shiftStart: '99', nav: 'javascript:', service: 9999 });
   assert.deepEqual(evil, []);
-  assert.equal(store.settings().orsKey, 'eyJvcnMiOiJjbGF2ZSJ9abc');
+  assert.equal(store.settings().googleKey, 'AIzaMiClaveDeGoogle123');
   assert.equal(store.settings().shiftStart, '07:00');
   assert.notEqual(store.settings().nav, 'javascript:');
   assert.ok(store.settings().service <= 180);

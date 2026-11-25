@@ -1,5 +1,6 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
-import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs, haversineKm } from './geo.js';
+import { geocode, navUrl, currentPosition, coordsFromText, trafficLegs, haversineKm, onGoogleUsage } from './geo.js';
+import { GOOGLE_MAPS_KEY } from './config.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
 import { bigOrder } from './portal.js';
@@ -10,8 +11,9 @@ import { serviceStart } from './solver.js';
 import { cleanEntry, goTo, entryDistanceM } from './entry.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
+import { watchTextSize, watchBars, applyTextSize } from './textsize.js';
 
-export const VERSION = '1.19.1';
+export const VERSION = '1.20.0';
 
 // ---------- Utilidades ----------
 
@@ -49,6 +51,9 @@ const I = {
 const DUM_MINUTES = 30;
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 const isAndroid = /Android/i.test(navigator.userAgent);
+// Dentro de la app de iPhone (la de verdad, no la web): ver native/ y LEEME.
+const isNative = (() => { try { return !!window.Capacitor?.isNativePlatform?.(); } catch { return false; } })();
+let measureBars = () => {};
 // Instalada en la pantalla de inicio. En iPhone eso aísla sus datos de Safari y nada de fuera puede
 // entrarle: el marcador no puede devolverle la ruta, así que ahí toca copiar y pegar.
 const isStandalone = (() => {
@@ -249,10 +254,26 @@ function mapApi() {
 
 function settings() { return store.settings(); }
 function currentRoute() { return store.route(ui.date); }
+// La clave de Google: la de este móvil si alguien ha puesto una, si no la de la empresa (js/config.js).
+const googleKey = () => (settings().googleKey || GOOGLE_MAPS_KEY || '').trim();
+const companyKey = () => !!(GOOGLE_MAPS_KEY || '').trim();
+
+// Los tiempos entre paradas de Google se reutilizan en cada «Siguiente», pero solo en memoria: sus
+// condiciones no dejan guardarlos en el móvil. Si iOS cierra la app, se vuelven a pedir los que hagan falta.
+const PAIRS = new Map(); // fecha -> pares
+const pairsOf = (date) => PAIRS.get(date) || {};
+const keepPairs = (date, pairs) => { PAIRS.set(date, pairs || {}); };
+
+// Lo que se ha consultado a Google este mes en este móvil, para saber lo que se gasta (Ajustes).
+const monthIso = () => store.isoDate().slice(0, 7);
+onGoogleUsage(({ elements = 0, routes = 0 }) => {
+  const u = settings().usage?.month === monthIso() ? settings().usage : { month: monthIso(), elements: 0, routes: 0 };
+  store.setSettings({ usage: { month: u.month, elements: u.elements + elements, routes: u.routes + routes } });
+});
 
 function signature(r) {
   return JSON.stringify([
-    settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey, !!settings().useWindows,
+    settings().shiftStart, settings().returnToDepot, !!googleKey(), !!settings().useWindows,
     r.stops.map((s) => [s.id, s.lat, s.lon, goTo(s), s.windows, stopMinutes(s), s.timing || '', !!s.windowsConfirmed]),
     parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
     r.manual || null,
@@ -275,9 +296,10 @@ function defaultDate() {
 function render() {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const eng = $('#engine');
-  const { orsKey, tomtomKey } = settings();
-  eng.className = `engine ${tomtomKey && orsKey ? 'live' : orsKey ? 'est' : 'off'}`;
-  eng.innerHTML = `<span class="dot"></span>${tomtomKey && orsKey ? 'Tráfico real' : orsKey ? 'Tráfico estimado' : 'Falta configurar'}`;
+  const live = !!googleKey();
+  eng.className = `engine ${live ? 'live' : 'off'}`;
+  eng.innerHTML = `<span class="dot"></span>${live ? 'Tráfico de Google' : 'Sin tráfico'}`;
+  eng.setAttribute('aria-label', live ? 'Tiempos y tráfico de Google Maps. Abrir ajustes' : 'Sin tiempos de Google: la ruta es aproximada. Abrir ajustes');
 
   const view = $('#view');
   let bar = '';
@@ -295,6 +317,7 @@ function render() {
   $('#actionbar').innerHTML = bar;
   $('#actionbar').hidden = !bar;
   document.body.classList.toggle('has-actionbar', !!bar);
+  measureBars();
   renderUpdate();
   renderSheet();
 }
@@ -348,31 +371,29 @@ function stopCard(s, i, leg, extra = '', park = null) {
   </button></li>`;
 }
 
-// Lo que ve quien abre la app por primera vez: tres pasos, y cada uno se marca al hacerlo.
+// Lo que ve quien abre la app por primera vez: pocos pasos, y cada uno se marca al hacerlo.
 function firstSteps() {
-  const s = settings();
   const step = (done, n, title, body) => `<li class="${done ? 'ok' : ''}"><span class="n">${done ? I.check : n}</span><div class="grow"><b>${title}</b>${body}</div></li>`;
+  const bring = portalNative() || portalApp() || !isAndroid;
+  let n = 0;
+  const steps = [];
+  // Con la clave de la empresa no hay nada que configurar: se salta el paso.
+  if (!googleKey()) {
+    steps.push(step(false, ++n, 'Pide la clave de Google al encargado',
+      `<div class="small muted">Sin ella la ruta sale aproximada, sin tráfico. Se pone en Ajustes → Más ajustes.</div>`));
+  }
+  steps.push(step(store.clientList().length > 0, ++n, '¿Te pasa un compañero sus clientes?',
+    `<div class="small muted">Si te ha mandado su archivo, impórtalo y tendrás sus clientes y el almacén.</div>
+     <label class="btn line block" style="cursor:pointer;margin-top:10px">Importar archivo<input type="file" id="import-file" accept="application/json,.json" hidden></label>`));
+  steps.push(step(false, ++n, 'Practica una ruta',
+    `<div class="small muted">6 paradas de ejemplo. Se borra con un toque.</div>
+     <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar una ruta de ejemplo</button>`));
+  steps.push(step(false, ++n, bring ? 'Trae tu ruta del portal' : 'Pega tu ruta',
+    bring ? '<div class="small muted">Con el botón dorado de abajo, con tu usuario del portal.</div>'
+      : '<div class="small muted">Copia la lista en el portal y usa «Pegar lista».</div>'));
   return `<div class="card first">
     <div class="serif">Primeros pasos</div>
-    <ol class="steps">
-      ${step(!!s.orsKey, 1, 'Configura la app',
-        `<div class="small muted">Pon tu clave gratuita en Ajustes: es solo tuya, cada repartidor tiene la suya. Si un compañero te pasa su configuración, impórtala y tendrás el almacén y sus clientes.</div>
-         <div class="actions2" style="margin:10px 0 0">
-           <label class="btn line" style="cursor:pointer">Importar archivo<input type="file" id="import-file" accept="application/json,.json" hidden></label>
-           <button class="btn ghost" data-action="tab" data-tab="settings">Ir a Ajustes</button>
-         </div>`)}
-      ${step(false, 2, 'Practica una ruta',
-        `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Empezar ruta», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
-         <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
-      ${step(false, 3, portalApp() || !isAndroid ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
-        ? `<div class="small muted">Toca «Traer la ruta del portal», entra con tu usuario del portal (solo la primera vez) y pulsa el botón dorado. Ahí mismo puedes pedir que te avise cuando salga la ruta de mañana.</div>`
-        : !isAndroid
-          // Sin APK lo hace el marcador, con tu usuario del portal: se guarda una vez (como instalar la APK)
-          // y a partir de ahí la ruta entra de un toque.
-          ? `<div class="small muted">Toca <b>«Traer la ruta del portal»</b>: guardas el marcador una vez ${isIOS ? 'en Safari' : 'en el navegador'} y luego la ruta entra de un toque, con tu usuario del portal.</div>
-             <button class="btn ghost block" data-action="open-bring" style="margin-top:10px">Traer la ruta del portal</button>`
-          : `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
-    </ol>
+    <ol class="steps">${steps.join('')}</ol>
   </div>`;
 }
 
@@ -411,7 +432,7 @@ function clearDemo() {
 }
 
 const demoBanner = (r) => (r.stops.some((x) => x.demo)
-  ? `<div class="notice gold compact">${I.info}<div class="grow">Ruta de ejemplo para practicar: no se guarda en tus clientes.</div><button class="btn line" data-action="clear-demo" style="min-height:40px;padding:0 12px">Borrar</button></div>`
+  ? `<div class="notice gold compact">${I.info}<div class="grow">Ruta de ejemplo, para practicar.</div><button class="btn line" data-action="clear-demo">Borrarla</button></div>`
   : '');
 
 function renderPlanning(r) {
@@ -422,7 +443,7 @@ function renderPlanning(r) {
   let html = dayBar() + demoBanner(r);
 
   if (!r.stops.length) {
-    html += settings().orsKey && store.clientList().length ? `<div class="empty">
+    html += store.clientList().length ? `<div class="empty">
       <div class="serif">Sin paradas todavía</div>
       <div class="small">Pega la lista de repartos (del portal de Escolà o de un mensaje) o añade las paradas a mano. Las direcciones y horarios que ya conozca la app se rellenan solos.</div>
       <button class="linkbtn" data-action="demo" style="margin-top:8px">Practicar con una ruta de ejemplo (hoy)</button>
@@ -436,7 +457,7 @@ function renderPlanning(r) {
     </div>`;
     if (p.late > 0.5) {
       const lateOnes = p.legs.filter((l) => l.late > 0.5).map((l) => r.stops.find((x) => x.id === l.id)?.name).filter(Boolean);
-      html += `<div class="notice warn">${I.warn}<div>Ni con el margen da tiempo a entregar en <b>${esc(lateOnes.join(', '))}</b> antes de que cierren (cuenta lo que se tarda en descargar). Revisa sus horarios o avisa al cliente.</div></div>`;
+      html += `<div class="notice warn">${I.warn}<div>No llegas a tiempo a <b>${esc(lateOnes.join(', '))}</b>. Revisa su horario o avisa al cliente.</div></div>`;
     }
     const inMargin = p.legs.filter((l) => !(l.late > 0.5)).map((l) => {
       const x = r.stops.find((y) => y.id === l.id);
@@ -444,11 +465,11 @@ function renderPlanning(r) {
       return m > 0.5 ? `${esc(x.name)} (+${Math.round(m)} min)` : '';
     }).filter(Boolean);
     const odds = r.stops.filter((x) => !x.done && odd(x));
-    if (odds.length && s.useWindows) html += `<div class="notice warn">${I.warn}<div>Horario de tarde que parece un error en ${odds.map((x) => `<b>${esc(x.name)}</b> (${x.windows.map(([a, b]) => `${fmt(a)}–${fmt(b)}`).join(', ')})`).join(', ')}. Lo trato como si aceptara desde las 10:00. Llama al cliente y apunta en su ficha el horario de verdad.</div></div>`;
-    if (inMargin.length) html += `<div class="notice warn">${I.info}<div>Llegas después de su horario, dentro del margen, a ${inMargin.join(', ')}. Si alguno es estricto, márcalo en su ficha.</div></div>`;
-    if (!s.useWindows) html += `<div class="notice gold">${I.info}<div>Horarios de los clientes apagados: el orden sale por cercanía y tráfico. Se encienden en <button class="linkbtn" data-action="tab" data-tab="settings" style="color:inherit">Ajustes</button>.</div></div>`;
-    const at = p.computedAt ? ` Calculada ${store.isoDate(new Date(p.computedAt)) === todayIso() ? 'hoy' : 'el ' + new Date(p.computedAt).toLocaleDateString('es-ES')} a las ${fmt(minOfDay(p.computedAt))}.` : '';
-    html += `<div class="notice info">${I.info}<div>Con ${p.source === 'tomtom' ? (p.live ? 'el tráfico de ese momento' : 'el tráfico previsto para esa hora') : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.${at}</div></div>`;
+    if (odds.length && s.useWindows) html += `<div class="notice warn">${I.warn}<div>Horario raro en ${odds.map((x) => `<b>${esc(x.name)}</b>`).join(', ')}: lo trato como si abrieran a las 10:00. Llama y apunta el horario en su ficha.</div></div>`;
+    if (inMargin.length) html += `<div class="notice warn">${I.info}<div>Llegas un poco tarde, dentro del margen, a ${inMargin.join(', ')}.</div></div>`;
+    if (!s.useWindows) html += `<div class="notice gold">${I.info}<div>Horarios de los clientes apagados (Ajustes).</div></div>`;
+    const at = p.computedAt ? ` Calculada ${store.isoDate(new Date(p.computedAt)) === todayIso() ? 'hoy' : 'el ' + new Date(p.computedAt).toLocaleDateString('es-ES')}, ${fmt(minOfDay(p.computedAt))}.` : '';
+    html += `<div class="source-line">${p.source === 'estimate' ? I.warn : I.check}<div>${sourceText(p)}. Salida ${fmt(p.startMin)}.${at}</div></div>`;
   }
 
   html += pasteBanner() + toldBanner(r);
@@ -461,11 +482,14 @@ function renderPlanning(r) {
   }
 
   const unloc = r.stops.filter((x) => !located(x)).length;
-  if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
+  if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? '1 parada sin ubicar: tócala' : `${unloc} paradas sin ubicar: tócalas`} para buscar la dirección.</div></div>`;
 
-  if (portalApp()) html += `<a class="btn gold big block" href="${esc(portalIntent())}" style="margin:14px 0 10px">Traer la ruta del portal</a>`;
+  // Con paradas ya puestas, el botón dorado es el de la ruta (Optimizar / Empezar): este pasa a segundo plano.
+  const bringCls = r.stops.length ? 'line' : 'gold big';
+  if (portalNative()) html += `<button class="btn ${bringCls} block" data-action="native-portal" style="margin:14px 0 10px">${I.go}Traer la ruta del portal</button>`;
+  else if (portalApp()) html += `<a class="btn ${bringCls} block" href="${esc(portalIntent())}" style="margin:14px 0 10px">Traer la ruta del portal</a>`;
   // Sin APK el marcador hace lo mismo (en Android no: Chrome y Edge no ejecutan marcadores).
-  else if (!isAndroid) html += `<button class="btn gold big block" data-action="open-bring" style="margin:14px 0 10px">Traer la ruta del portal</button>`;
+  else if (!isAndroid) html += `<button class="btn ${bringCls} block" data-action="open-bring" style="margin:14px 0 10px">Traer la ruta del portal</button>`;
   html += `<div class="actions2">
     <button class="btn ghost" data-action="open-paste">${I.paste}Pegar lista</button>
     <button class="btn ghost" data-action="open-stop">${I.plus}Añadir parada</button>
@@ -502,6 +526,13 @@ function renderPlanning(r) {
   return html;
 }
 
+// De dónde salen las horas de la ruta, en palabras. 'tomtom' y 'ors' son de rutas calculadas antes de Google.
+function sourceText(p) {
+  if (p.source === 'traffic' || p.source === 'tomtom') return `Con el tráfico de Google ${p.live ? 'de ese momento' : 'previsto para esa hora'}`;
+  if (p.source === 'google' || p.source === 'ors') return 'Con tiempos de Google y tráfico estimado por hora';
+  return googleKey() ? 'Con distancias aproximadas: Google no ha respondido' : 'Con distancias aproximadas: falta la clave de Google';
+}
+
 // ---------- Orden a mano ----------
 
 // Paradas que se pueden ordenar: las pendientes y ubicadas, en el orden actual (en ruta, la actual primero).
@@ -515,8 +546,8 @@ function reorderIds(r) {
   return orderedStops(r).filter(pending).map((x) => x.id);
 }
 const reorderButton = (r) => (reorderIds(r).length > 1 ? '<button class="btn line small" data-action="open-reorder">Cambiar orden</button>' : '');
-const manualNotice = () => `<div class="notice gold compact">${I.info}<div class="grow">Orden puesto por ti: «Recalcular» y «Siguiente» lo mantienen y solo cambian las horas.</div>
-  <button class="btn line" data-action="order-auto" style="min-height:40px;padding:0 12px">Orden óptimo</button></div>`;
+const manualNotice = () => `<div class="notice gold compact">${I.info}<div class="grow">Orden puesto por ti: se mantiene.</div>
+  <button class="btn line" data-action="order-auto">Volver al óptimo</button></div>`;
 
 function sheetReorder(sh) {
   const r = currentRoute();
@@ -702,8 +733,8 @@ function toldBanner(r) {
   // Solo las que de verdad bailan: si de las pendientes ya sé lo que cuestan, no hay nada que decir.
   const n = pendingTold(r).filter(worthTold).length;
   if (!n) return '';
-  return `<div class="notice info">${I.clock}<div class="grow">Dime cuánto crees que tardarás en ${n === 1 ? 'una parada' : `${n} paradas`} y calculo las horas con tu tiempo, no con el mío.</div>
-    <button class="btn line" data-action="open-told" style="min-height:40px;padding:0 12px">Decirlo</button></div>`;
+  return `<div class="notice info">${I.clock}<div class="grow">¿Cuánto tardarás en ${n === 1 ? 'una parada nueva' : `${n} paradas nuevas`}?</div>
+    <button class="btn line" data-action="open-told">Decirlo</button></div>`;
 }
 
 // Lo que la app sabe de esa parada aparte de lo que digas tú: su cálculo, lo medido y los viajes de hoy.
@@ -825,7 +856,7 @@ function restoreWaitingPaste() {
 function pasteBanner() {
   if (!ui.waitingPaste || Date.now() - ui.waitingPaste > PASTE_MAX_MIN * 60000) return '';
   return `<div class="notice gold">${I.paste}<div class="grow">¿Ya has tocado tu ruta en el portal? La tienes copiada.</div>
-    <button class="btn line" data-action="paste-route" style="min-height:40px;padding:0 12px">Pegar la ruta</button></div>`;
+    <button class="btn line" data-action="paste-route">Pegar la ruta</button></div>`;
 }
 
 function bringSteps() {
@@ -907,77 +938,94 @@ function renderBridge() {
   </div>`;
 }
 
+// Tamaños de letra que se eligen en la app, encima del tamaño del móvil (Ajustes del iPhone → Pantalla y brillo
+// → Tamaño del texto, que la app ya sigue sola).
+const TEXT_SCALES = [[1, 'Normal'], [1.15, 'Grande'], [1.3, 'Muy grande'], [1.5, 'Enorme']];
+
+function googleCard() {
+  const s = settings();
+  const key = googleKey();
+  const u = s.usage?.month === monthIso() ? s.usage : null;
+  const status = key
+    ? `<div class="notice info" style="margin-top:0">${I.check}<div>Tiempos y tráfico de <b>Google Maps</b>${companyKey() && !s.googleKey ? ', con la clave de la empresa' : ''}.</div></div>`
+    : `<div class="notice warn" style="margin-top:0">${I.warn}<div>Falta la clave de Google: la ruta se ordena por distancia aproximada, sin tráfico. La pone el encargado una vez para todos; si te ha dado una, pégala aquí.</div></div>`;
+  return `<div class="card">
+    ${status}
+    <label class="field"><span>Clave de Google de este móvil${companyKey() ? ' (normalmente vacía)' : ''}</span>
+      <input class="input" id="set-google" value="${esc(s.googleKey || '')}" placeholder="${companyKey() ? 'Se usa la de la empresa' : 'Pega aquí la clave'}" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <button class="btn line block" data-action="test-google" ${ui.testing ? 'disabled' : ''}>${ui.testing ? '<span class="spin"></span>Probando…' : 'Probar Google'}</button>
+    <div class="hint" style="margin-top:10px">${u ? `Este mes, desde este móvil: ${u.elements.toLocaleString('es-ES')} tiempos entre paradas y ${u.routes.toLocaleString('es-ES')} rutas con tráfico.` : 'Este mes aún no se ha consultado a Google desde este móvil.'}</div>
+  </div>`;
+}
+
 function renderSettings() {
   const s = settings();
+  const scale = s.textScale || 1;
   return `
-  <h2 class="section-title" style="margin-top:6px">Rutas y tráfico</h2>
+  <h2 class="section-title" style="margin-top:6px">Tamaño de la letra</h2>
   <div class="card">
-    ${s.orsKey ? '' : `<div class="notice warn" style="margin-top:0">${I.warn}<div>Falta la clave de rutas: sin ella la app ordena las paradas por distancia en línea recta.</div></div>`}
-    <label class="field"><span>Clave de rutas (openrouteservice) · necesaria</span>
-      <span class="input-row"><input class="input" id="set-ors" value="${esc(s.orsKey)}" placeholder="Pega aquí tu clave" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button class="btn line" data-action="test-ors">Probar</button></span>
-    </label>
-    <div class="key-help">Gratis y sin tarjeta (500 rutas al día, de sobra):
-      <ol><li>Crea una cuenta en <a href="https://account.heigit.org/" target="_blank" rel="noopener">account.heigit.org</a>.</li>
-      <li>En el panel crea una clave (token) y cópiala.</li>
-      <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol>
+    <div class="seg big-seg" role="group" aria-label="Tamaño de la letra">
+      ${TEXT_SCALES.map(([v, l]) => `<button data-action="text-scale" data-v="${v}" class="${scale === v ? 'on' : ''}" aria-pressed="${scale === v}" style="font-size:${v}em">${l}</button>`).join('')}
     </div>
-    <label class="field" style="margin-top:18px"><span>Clave de TomTom · opcional, tráfico en tiempo real</span>
-      <span class="input-row"><input class="input" id="set-key" value="${esc(s.tomtomKey)}" placeholder="Pega aquí tu clave" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button class="btn line" data-action="test-key">Probar</button></span>
-    </label>
-    <div class="key-help">${s.tomtomKey ? 'Activo: la ruta se corrige con el tráfico previsto al planificar y con el de ese momento al salir y en cada parada.' : 'Sin ella el tráfico se estima por franja horaria: no ve accidentes ni cortes.'}
-      Gratis y sin tarjeta (20.000 rutas al mes; la app gasta unas 40 al día):
-      <ol><li><a href="https://developer.tomtom.com/user/login" target="_blank" rel="noopener">Crea tu cuenta o inicia sesión en TomTom</a>.
-        Pulsa el botón rojo <b>Register / sign in</b>; si te pregunta cómo vas a usarlo, elige <b>Build with APIs</b>.</li>
-      <li><a href="https://my.tomtom.com/keys" target="_blank" rel="noopener">Abre tus claves</a> y copia la que ya viene creada
-        (<b>My first API key</b>). Si no hay ninguna, pulsa <b>Create Key</b>.</li>
-      <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol></div>
+    <div class="hint" style="margin:12px 0 0">${isIOS ? 'La app ya sigue el tamaño de letra del iPhone (Ajustes → Pantalla y brillo → Tamaño del texto). Esto la agranda más todavía.' : 'Esto se suma al tamaño de letra del móvil.'}</div>
+  </div>
+
+  <h2 class="section-title">Navegar con</h2>
+  <div class="nav-pick" role="group" aria-label="App para navegar">
+    <button class="btn ${s.nav === 'gmaps' ? 'ghost' : 'gold'} big" data-action="nav-app" data-v="waze" aria-pressed="${s.nav !== 'gmaps'}">${s.nav !== 'gmaps' ? I.check : ''}Waze</button>
+    <button class="btn ${s.nav === 'gmaps' ? 'gold' : 'ghost'} big" data-action="nav-app" data-v="gmaps" aria-pressed="${s.nav === 'gmaps'}">${s.nav === 'gmaps' ? I.check : ''}Google Maps</button>
+  </div>
+
+  <h2 class="section-title">Jornada</h2>
+  <div class="card">
+    <label class="field"><span>Hora de salida del almacén</span><input class="input" type="time" id="set-shift" value="${esc(s.shiftStart)}"></label>
+    <label class="toggle"><span>Volver al almacén al acabar</span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
+    <label class="toggle"><span>Respetar el horario de cada cliente<span class="sub">${s.useWindows ? `Con margen: ${LATE_OK_MORNING} min si cierra por la mañana, ${LATE_OK_AFTERNOON} si cierra más tarde.` : 'Apagado: el orden sale solo por cercanía y tráfico.'}</span></span><input type="checkbox" id="set-windows" ${s.useWindows ? 'checked' : ''}></label>
+    <label class="toggle" style="border:0"><span>Preguntarme cuánto tardaré en cada parada<span class="sub">${s.askTold ? 'Al traer una ruta, solo por las paradas que no conozco.' : 'Apagado: lo calculo yo.'}</span></span><input type="checkbox" id="set-asktold" ${s.askTold ? 'checked' : ''}></label>
   </div>
 
   ${renderBridge()}
 
-  <h2 class="section-title">Jornada</h2>
-  <div class="card">
-    <label class="field"><span>Hora de inicio</span><input class="input" type="time" id="set-shift" value="${esc(s.shiftStart)}"></label>
-    <label class="field"><span>Minutos de descarga por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${esc(s.service)}"></label>
-    <label class="field"><span>Minutos de aparcar por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="0" max="90" id="set-park" value="${esc(s.park)}"></label>
-    <div class="hint">Esto es lo que calculo cuando no me dices tú cuánto tardas. La descarga es lo que se tarda una vez aparcado, con un pedido de una caja. Las cajas van aparte: en la carretilla caben ${TROLLEY_BOXES} (${LOOSE_PER_BOX} botellas sueltas ocupan una caja) y cada viaje de más son ${TRIP_MIN} min. Lo de aparcar varía mucho: súbelo en la ficha de los clientes donde cuesta encontrar hueco.</div>
-    <label class="toggle"><span>Preguntarme cuánto tardaré en cada parada<span class="tiny faint" style="display:block">${s.askTold ? 'Al traer una ruta te pregunto por las paradas nuevas, y en ruta puedes cambiarlo en cualquier momento. Tu tiempo manda sobre mi cálculo.' : 'Apagado: calculo yo los minutos de cada parada. Puedes decirlos igual en la ficha del cliente o desde la parada.'}</span></span><input type="checkbox" id="set-asktold" ${s.askTold ? 'checked' : ''}></label>
-    <label class="toggle"><span>Tener en cuenta los horarios de los clientes<span class="tiny faint" style="display:block">${s.useWindows ? `Con margen: ${LATE_OK_MORNING} min si cierra por la mañana, ${LATE_OK_AFTERNOON} min si cierra a mediodía o más tarde. La app avisa cuando lo usa.` : 'Apagado: el orden sale por cercanía y tráfico. Los horarios se siguen viendo en cada parada.'}</span></span><input type="checkbox" id="set-windows" ${s.useWindows ? 'checked' : ''}></label>
-    <label class="toggle"><span>Volver al almacén al acabar<span class="tiny faint" style="display:block">Cuenta el regreso al calcular la ruta</span></span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
-    <div class="toggle" style="border:0;padding-bottom:0"><span>Navegar con</span>
-      <span class="seg"><button data-action="nav-app" data-v="waze" class="${s.nav === 'waze' ? 'on' : ''}" aria-pressed="${s.nav === 'waze'}">Waze</button><button data-action="nav-app" data-v="gmaps" class="${s.nav === 'gmaps' ? 'on' : ''}" aria-pressed="${s.nav === 'gmaps'}">Google Maps</button></span>
-    </div>
-  </div>
-
-  <h2 class="section-title">Almacén (punto de salida)</h2>
-  <div class="card">
-    <div class="row"><span style="color:var(--gold);width:20px" aria-hidden="true">${I.pin}</span><div class="grow"><div style="font-weight:600">${esc(s.depot.name)}</div><div class="tiny faint">${esc(Number(s.depot.lat).toFixed(5))}, ${esc(Number(s.depot.lon).toFixed(5))}</div></div>
-    <button class="btn line" data-action="change-depot">Cambiar</button></div>
-  </div>
-
   <h2 class="section-title">Copias y compañeros</h2>
   <div class="card">
-    <div class="small muted" style="margin-bottom:12px"><b>Copia de seguridad:</b> guarda clientes, horarios y rutas (sin tus claves) en Drive o en un mensaje a ti mismo. ${backupAge()}</div>
     <button class="btn line block" data-action="backup">Hacer copia de seguridad</button>
-    <div class="small muted" style="margin:16px 0 12px"><b>Para un compañero nuevo:</b> «Pasar configuración» le pasa el almacén, el horario y tus clientes. Tus claves no se pasan nunca: cada uno pone la suya en Ajustes.
-      «Pasar clientes» manda solo direcciones y horarios. Al <b>importar</b> nada se borra: se suma a lo que ya hay.</div>
-    <button class="btn line block" data-action="export-config">Pasar configuración</button>
+    <div class="hint" style="margin:8px 0 16px">Guarda clientes, horarios y rutas en Drive o en un mensaje a ti mismo. ${backupAge()}</div>
+    <button class="btn line block" data-action="export-config">Pasar configuración a un compañero</button>
     <div class="actions2" style="margin:10px 0 0">
       <button class="btn ghost" data-action="export">Pasar clientes</button>
       <label class="btn ghost" style="cursor:pointer">Importar<input type="file" id="import-file" accept="application/json,.json" hidden></label>
     </div>
-    <div class="tiny ${ui.persisted ? 'faint' : 'warn-ink'}" style="margin-top:12px">${ui.persisted ? 'Datos protegidos: el móvil no los borrará aunque le falte espacio.' : 'El móvil podría borrar los datos si se queda sin espacio o borras los datos de Chrome: haz una copia de vez en cuando.'}</div>
+    <div class="hint" style="margin:10px 0 0">Al importar no se borra nada: se suma a lo que ya hay.</div>
+    <div class="tiny ${ui.persisted || isNative ? 'faint' : 'warn-ink'}" style="margin-top:12px">${ui.persisted || isNative ? 'Datos protegidos: el móvil no los borrará aunque le falte espacio.' : 'El móvil podría borrar los datos si se queda sin espacio: haz una copia de vez en cuando.'}</div>
   </div>
 
-  <div class="tiny faint" style="text-align:center;margin:22px 0 4px;line-height:1.6">Ruta Escolà · v${VERSION}<br>
+  <details class="more" ${ui.moreOpen ? 'open' : ''}>
+    <summary data-action="toggle-more">Más ajustes</summary>
+
+    <h2 class="section-title">Google Maps (tiempos y tráfico)</h2>
+    ${googleCard()}
+
+    <h2 class="section-title">Minutos por parada</h2>
+    <div class="card">
+      <label class="field"><span>Descarga, una vez aparcado</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${esc(s.service)}"></label>
+      <label class="field"><span>Buscar aparcamiento</span><input class="input" type="number" inputmode="numeric" min="0" max="90" id="set-park" value="${esc(s.park)}"></label>
+      <div class="hint" style="margin:0">Lo que calculo cuando no me dices tú cuánto tardas. Las cajas van aparte: en la carretilla caben ${TROLLEY_BOXES} (${LOOSE_PER_BOX} botellas sueltas ocupan una caja) y cada viaje de más son ${TRIP_MIN} min.</div>
+    </div>
+
+    <h2 class="section-title">Almacén (punto de salida)</h2>
+    <div class="card">
+      <div style="font-weight:600">${esc(s.depot.name)}</div>
+      <button class="btn line block" style="margin-top:12px" data-action="change-depot">Cambiar el almacén</button>
+    </div>
+  </details>
+
+  <div class="tiny faint" style="text-align:center;margin:22px 0 4px;line-height:1.6">Ruta Escolà · v${VERSION}${isNative ? ' · app de iPhone' : ''}<br>
     Clientes y rutas se guardan en este móvil. Para buscar direcciones y calcular tiempos se consultan
     servicios de mapas; tu posición solo se usa para calcular la siguiente parada.<br>
+    Tiempos y tráfico: Google Maps<br>
     Direcciones: © <a href="https://www.icgc.cat/" target="_blank" rel="noopener">ICGC</a> (CC BY 4.0) ·
     <a href="https://www.cartociudad.es/" target="_blank" rel="noopener">CartoCiudad</a> © IGN (CC BY 4.0) ·
     © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a><br>
-    Rutas: © <a href="https://openrouteservice.org/" target="_blank" rel="noopener">openrouteservice</a> by HeiGIT${s.tomtomKey ? ' · Tráfico: © TomTom' : ''}<br>
     Mapa: © <a href="https://www.icgc.cat/" target="_blank" rel="noopener">ICGC</a> (CC BY 4.0) · <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a><br>
     Zonas de carga y descarga: © <a href="https://opendata-ajuntament.barcelona.cat/data/dataset/zones-carrega-descarrega" target="_blank" rel="noopener">Ajuntament de Barcelona, Open Data BCN</a> (CC BY 4.0)</div>`;
 }
@@ -1058,7 +1106,7 @@ function renderSheet() {
   else if (sh.kind === 'reorder') body = sheetReorder(sh);
   else if (sh.kind === 'told') body = sheetTold(sh);
   else if (sh.kind === 'bring') body = sheetBring();
-  wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1"><div class="grab" aria-hidden="true"></div>${body}</div>`;
+  wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1"><div class="grab" aria-hidden="true"></div><button class="iconbtn sheet-x" data-action="close" aria-label="Cerrar">${I.x}</button>${body}</div>`;
   $('.sheet', wrap).scrollTop = scroll;
 }
 
@@ -1455,17 +1503,17 @@ async function optimize({ recalc = false } = {}) {
   departAt.setMinutes(startMin);
   const live = recalc && today;
   const before = r.plan && !isDirty(r) ? r.plan.order.join() : null;
-  ui.busy = live && s.tomtomKey ? 'Mirando el tráfico ahora mismo…' : s.tomtomKey && s.orsKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
+  ui.busy = live && googleKey() ? 'Mirando el tráfico…' : 'Calculando la ruta…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live, pairs: {}, returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
-    r.pairs = plan.pairs; delete plan.pairs;
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: googleKey(), live, pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
+    keepPairs(ui.date, plan.pairs); delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
     const what = r.manual ? `Horas con tu orden · vuelta ${fmt(plan.end)}${plan.late > 0.5 ? ' · alguien queda fuera de horario' : ''}`
       : !recalc ? 'Ruta optimizada'
       : before && before !== plan.order.join() ? `He cambiado el orden · vuelta ${fmt(plan.end)}` : `Mismo orden · vuelta ${fmt(plan.end)}`;
-    toast(plan.warning ? `Ruta aproximada (${plan.warning}). Revisa la clave en Ajustes.` : what, plan.warning ? 6000 : 3200);
+    toast(plan.warning ? `Ruta aproximada: ${plan.warning}` : what, plan.warning ? 6000 : 3200);
   } catch (e) {
     toast(friendlyError(e), 4000);
   }
@@ -1516,17 +1564,17 @@ async function replanActive(msg) {
   const parkedAt = g >= 0 && parking[g].ids.some((id) => active.some((a) => a.id === id)) ? g : null;
   try {
     const plan = await computePlan({
-      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true,
-      stops: active.map(planStop), pairs: r.pairs || {}, returnToDepot: s.returnToDepot, parking, parkedAt, fixedOrder: r.manual || null,
+      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: googleKey(), live: true,
+      stops: active.map(planStop), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking, parkedAt, fixedOrder: r.manual || null,
     });
-    r.pairs = plan.pairs; delete plan.pairs;
+    keepPairs(ui.date, plan.pairs); delete plan.pairs;
     plan.order.push(...r.postponed.filter((id) => postponed.has(id)));
     r.plan = plan; r.planSig = signature(r);
     r.current = plan.order[0];
     markCurrent(r, plan.legs[0], Date.now());
     const next = r.stops.find((x) => x.id === r.current);
     const leg = plan.legs[0];
-    if (plan.warning) toast(`Siguiente: ${next.name} · ruta aproximada (${plan.warning})`, 5000);
+    if (plan.warning) toast(`Siguiente: ${next.name} · ruta aproximada: ${plan.warning}`, 5000);
     else if (msg !== null) toast(msg || `Siguiente: ${next.name}${leg ? ` · llegada ${fmt(leg.arrive)}` : ''}`, 3200);
   } catch {
     // Sin red: siguiente del orden previsto.
@@ -1812,9 +1860,15 @@ const actions = {
     toast(`${target.name} añadido a ${dayName(ui.date).rel.toLowerCase()}`);
   },
   close: () => requestCloseSheet(),
+  'text-scale': (el) => {
+    const v = TEXT_SCALES.find(([x]) => String(x) === el.dataset.v)?.[0] || 1;
+    store.setSettings({ textScale: v });
+    applyTextSize(v);
+    render();
+  },
+  'toggle-more': () => { ui.moreOpen = !ui.moreOpen; render(); },
   'nav-app': (el) => { store.setSettings({ nav: el.dataset.v === 'gmaps' ? 'gmaps' : 'waze' }); render(); },
-  'test-key': () => testKey(),
-  'test-ors': () => testOrs(),
+  'test-google': () => testGoogle(),
   'change-depot': () => openSheet({ kind: 'depot', draft: { address: '', lat: null, lon: null, label: '' } }),
   'save-depot': () => {
     const d = ui.sheet.draft;
@@ -1951,30 +2005,21 @@ async function pasteAdd() {
 
 const PROBE = [{ lat: 41.372083, lon: 2.077356 }, { lat: 41.3756, lon: 2.1316 }]; // almacén → Carrer de Sants
 
-async function testKey() {
-  const key = $('#set-key').value.trim();
-  store.setSettings({ tomtomKey: key });
-  if (!key) { render(); return toast('Clave de TomTom quitada: tráfico estimado'); }
+// Prueba la clave de Google con una ruta de verdad (una consulta): almacén → Carrer de Sants, ahora.
+async function testGoogle() {
+  const input = $('#set-google');
+  if (input) store.setSettings({ googleKey: input.value.trim() });
+  const key = googleKey();
+  if (!key) { render(); return toast('Falta la clave de Google: la ruta será aproximada', 4000); }
+  ui.testing = true; render();
   try {
     const legs = await trafficLegs(PROBE, { key, live: true });
-    if (!legs) throw new Error('TomTom no ha respondido; prueba en un rato');
-    toast(`Clave correcta: tráfico real activado ✓ (almacén → Sants ahora: ${Math.round(legs[0])} min)`, 4000);
+    if (!legs) throw new Error('Google no ha respondido; prueba en un rato');
+    toast(`Funciona ✓ Del almacén a Sants ahora: ${Math.round(legs[0])} min`, 4500);
   } catch (e) {
-    toast(e.message || 'La clave no funciona', 4000);
+    toast(e.message || 'La clave no funciona', 6000);
   }
-  render();
-}
-
-async function testOrs() {
-  const key = $('#set-ors').value.trim();
-  store.setSettings({ orsKey: key });
-  if (!key) { render(); return toast('Clave de rutas quitada'); }
-  try {
-    const mx = await travelMatrix([PROBE[0]], [PROBE[1]], { orsKey: key, departAt: new Date() });
-    toast(`Clave correcta ✓ (almacén → Sants: ${mx.km[0][0].toFixed(1)} km)`, 4000);
-  } catch (e) {
-    toast(e.message || 'La clave no funciona', 4000);
-  }
+  ui.testing = false;
   render();
 }
 
@@ -2036,6 +2081,28 @@ function registerServiceWorker() {
 
 // ---------- Escuchas ----------
 
+// Como en las apps: la hoja se cierra arrastrándola hacia abajo (desde arriba del todo).
+(() => {
+  let y0 = null, dy = 0, sheet = null;
+  document.addEventListener('touchstart', (e) => {
+    sheet = e.target.closest?.('.sheet');
+    if (!sheet || sheet.scrollTop > 0 || e.target.closest('input, textarea, select')) { sheet = null; return; }
+    y0 = e.touches[0].clientY; dy = 0;
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!sheet || y0 == null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    if (sheet.scrollTop > 0) { dy = 0; return; }
+    sheet.style.transform = dy ? `translateY(${dy}px)` : '';
+  }, { passive: true });
+  document.addEventListener('touchend', () => {
+    if (!sheet) return;
+    const s = sheet; sheet = null; y0 = null;
+    if (dy > 110) { s.style.transition = 'transform .15s'; s.style.transform = 'translateY(100%)'; requestCloseSheet().then((closed) => { if (!closed) { s.style.transform = ''; } }); }
+    else { s.style.transition = 'transform .15s'; s.style.transform = ''; setTimeout(() => { s.style.transition = ''; }, 160); }
+  });
+})();
+
 document.addEventListener('click', (e) => {
   if (e.target.closest('[data-toast-action]')) {
     const fn = toast._action;
@@ -2070,8 +2137,7 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-asktold') { store.setSettings({ askTold: t.checked }); render(); }
   if (t.id === 'set-return') store.setSettings({ returnToDepot: t.checked });
   if (t.id === 'set-windows') { store.setSettings({ useWindows: t.checked }); render(); }
-  if (t.id === 'set-key') store.setSettings({ tomtomKey: t.value.trim() });
-  if (t.id === 'set-ors') store.setSettings({ orsKey: t.value.trim() });
+  if (t.id === 'set-google') { store.setSettings({ googleKey: t.value.trim() }); render(); }
   if (t.id === 'import-file' && t.files[0]) {
     t.files[0].text().then(async (txt) => {
       t.value = '';
@@ -2184,6 +2250,11 @@ async function pasteFromClipboard() {
   receive({ text: text.slice(0, 100000), trusted: true });
 }
 
+// La app de iPhone trae la ruta ella misma: abre el portal dentro y la lee (ver native/). Sin marcador.
+function portalNative() {
+  try { return isNative && !!window.Capacitor?.Plugins?.Portal; } catch { return false; }
+}
+
 function portalApp() {
   try {
     const [major, minor] = (localStorage.getItem('ruta-apk') || '').split('.').map(Number);
@@ -2224,6 +2295,8 @@ function receive({ text, trusted }) {
 store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();
+watchTextSize(() => settings().textScale || 1);
+measureBars = watchBars();
 restoreWaitingPaste();
 const first = incoming();
 render();
@@ -2231,4 +2304,6 @@ receive(first);
 // Con la app ya abierta, la APK manda la ruta cambiando solo el #: no se recarga la página.
 window.addEventListener('hashchange', () => receive(incoming()));
 store.requestPersist().then((p) => { ui.persisted = p; if (ui.tab === 'settings' && !ui.sheet) render(); });
+// Si el iPhone cambia de tamaño de letra (o se gira), se recoloca todo.
+addEventListener('resize', () => measureBars());
 registerServiceWorker();

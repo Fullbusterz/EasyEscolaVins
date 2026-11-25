@@ -24,7 +24,7 @@ for (const [i, s] of list.entries()) {
 }
 for (const s of stops) console.log(s.name.padEnd(24), s.windows.map(w => w.map(fmt).join('-')).join(' ').padEnd(12), s.label);
 
-const plan = await computePlan({ from: depot, depot, stops, startMin: 450, departAt: new Date(), orsKey: process.env.ORS_KEY, tomtomKey: process.env.TOMTOM_KEY });
+const plan = await computePlan({ from: depot, depot, stops, startMin: 450, departAt: new Date(), key: process.env.GOOGLE_KEY });
 console.log(`\nSalida 07:30 · ${plan.source} · ${plan.km.toFixed(1)} km · vuelta ${fmt(plan.end)} · retraso ${plan.late} min · espera ${Math.round(plan.wait)} min`);
 for (const l of plan.legs) {
   const s = stops.find(x => x.id === l.id);
@@ -35,5 +35,5 @@ for (const l of plan.legs) {
 const first = stops.find(s => s.id === plan.order[0]);
 const rest = stops.filter(s => s.id !== first.id);
 const t0 = Date.now();
-const p2 = await computePlan({ from: first, depot, stops: rest, startMin: plan.legs[0].begin + 10, departAt: new Date(), pairs: plan.pairs, orsKey: process.env.ORS_KEY });
+const p2 = await computePlan({ from: first, depot, stops: rest, startMin: plan.legs[0].begin + 10, departAt: new Date(), pairs: plan.pairs, key: process.env.GOOGLE_KEY });
 console.log(`\nSiguiente desde ${first.name}: ${stops.find(s => s.id === p2.order[0]).name} a las ${fmt(p2.legs[0].arrive)} (${Date.now() - t0} ms, reutiliza pares: ${Object.keys(p2.pairs).length === Object.keys(plan.pairs).length})`);

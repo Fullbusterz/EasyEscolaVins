@@ -1,7 +1,15 @@
-// Une la matriz de tiempos con el optimizador y guarda los tiempos entre paradas para reutilizarlos
-// en cada "Siguiente" (así solo se pide de nuevo la fila desde donde estás, que es la que cambia).
+// Une los tiempos de Google con el optimizador.
+//
+// Pedir a Google todos los pares de 25 paradas son 676 tiempos en cada cálculo, y se pagan uno a uno. Pero
+// una buena ruta casi nunca salta de una punta a la otra: va de una parada a alguna de sus vecinas. Así que
+// se piden solo los pares entre cada parada y sus vecinas más cercanas (y la salida a todas); los demás se
+// estiman con la línea recta y los minutos por kilómetro que Google acaba de dar para esa zona. Luego la
+// consulta con tráfico de la ruta elegida pone los tiempos de verdad en los tramos que se van a hacer.
+//
+// Los pares se reutilizan en cada «Siguiente» y al añadir una parada solo se piden los suyos. Viven en
+// memoria (app.js): las condiciones de Google no dejan guardarlos en el móvil.
 
-import { travelMatrix, trafficLegs } from './geo.js';
+import { googleMatrix, trafficLegs, haversineKm, trafficFactor, estimate, calibrate, guess, sameSpot, netWarning } from './geo.js';
 import { optimize, evaluate } from './solver.js';
 import { walkPlan, walkMin } from './parking.js';
 
@@ -9,57 +17,104 @@ import { walkPlan, walkMin } from './parking.js';
 const nodeKey = (p, id) => `${id}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
 const pairKey = (a, b) => `${a}>${b}`;
 
-// pairs: { "idA@lat,lon>idB@lat,lon": { m: minutos, km, at: timestamp, src } }
-function haveFreshPairs(keys, pairs, src, maxAgeMin) {
-  const limit = Date.now() - maxAgeMin * 60000;
-  for (let i = 0; i < keys.length - 1; i++) {
-    for (let j = 0; j < keys.length; j++) {
-      if (i === j) continue;
-      const p = pairs[pairKey(keys[i], keys[j])];
-      if (!p || p.src !== src || p.at < limit) return false;
-    }
+// Con pocas paradas se piden todos los pares (son pocos); con más, cada parada con sus vecinas.
+export const FULL_UP_TO = 8;
+export const NEIGHBORS = 6;
+// Desde donde estás (en ruta), a cuántas de las paradas pendientes más cercanas se pregunta.
+export const FROM_NEAREST = 8;
+
+// Índices de `list` más cercanos a p (en línea recta), sin contar `skip`.
+const nearest = (p, list, k, skip = -1) => list.map((q, idx) => ({ idx, d: haversineKm(p, q) }))
+  .filter((x) => x.idx !== skip).sort((a, b) => a.d - b.d).slice(0, k).map((x) => x.idx);
+
+/**
+ * Qué pares (índices de nodo: 1..n paradas, n+1 almacén) merece la pena pedir a Google entre las paradas.
+ * Todos con todos hasta FULL_UP_TO paradas; con más, cada parada con sus NEIGHBORS más cercanas, en los dos
+ * sentidos. Devuelve una lista de [i, j].
+ */
+export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToDepot = true } = {}) {
+  const n = stops.length;
+  const out = new Map();
+  const add = (i, j) => { if (i !== j) out.set(`${i},${j}`, [i, j]); };
+  if (n <= full) {
+    for (let i = 1; i <= n; i++) for (let j = 1; j <= n; j++) add(i, j);
+    if (returnToDepot) for (let i = 1; i <= n; i++) add(i, n + 1);
+  } else {
+    stops.forEach((s, a) => {
+      for (const b of nearest(s, stops, k, a)) { add(a + 1, b + 1); add(b + 1, a + 1); }
+    });
   }
-  return true;
+  return [...out.values()];
 }
 
 /**
  * from: {lat, lon} punto de salida. stops: [{id, lat, lon, windows:[[a,b]], service}].
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
- * maxAgeMin: antigüedad máxima de los tiempos entre paradas guardados para reutilizarlos.
- * orsKey: openrouteservice (tiempos de conducción). tomtomKey + live: corrección con tráfico (no se guarda).
+ * key: clave de Google. Sin ella se estima por distancia. live: tráfico de ahora (si no, el previsto).
+ * pairs: tiempos entre paradas ya pedidos ({ "idA@lat,lon>idB@lat,lon": { m, km, at, src } }), en memoria.
+ * maxAgeMin: antigüedad máxima de esos tiempos para reutilizarlos.
  * parking: aparcamientos aceptados [{ids, lat, lon}]: entre paradas del mismo se va a pie pasando por la furgoneta.
  * parkedAt: índice del aparcamiento donde está ahora la furgoneta (si se sale andando desde from).
  * fixedOrder: ids en el orden que ha puesto el repartidor. Se respeta y solo se calculan las horas; las paradas
  * que no estén (añadidas después) van al final y los ids que ya no existen se ignoran.
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
-  if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs };
-  const src = orsKey ? 'ors' : 'estimate';
-  const dests = [...stops, depot];
-  // keys[i] para i < n: paradas; keys[n]: almacén.
-  const keys = [...stops.map((s) => nodeKey(s, s.id)), nodeKey(depot, 'depot')];
-  const reusePairs = haveFreshPairs(keys, pairs, src, maxAgeMin);
-  const origins = reusePairs ? [from] : [from, ...stops];
-  const mx = await travelMatrix(origins, dests, { orsKey, departAt });
-
+export async function computePlan({ from, stops, depot, startMin, departAt, key, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
+  if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs: {} };
+  const n = stops.length;
+  const depart = departAt instanceof Date ? departAt : new Date();
   const now = Date.now();
-  const next = {};
-  // Solo se conservan los pares de las paradas actuales: lo demás es peso muerto en el móvil.
-  for (let i = 0; i < stops.length; i++) {
-    for (let j = 0; j < keys.length; j++) {
-      if (i === j) continue;
-      const k = pairKey(keys[i], keys[j]);
-      if (reusePairs) next[k] = pairs[k];
-      else next[k] = { m: mx.minutes[i + 1][j], km: mx.km[i + 1][j], at: now, src: mx.source };
+  // Nodos: 0 = salida, 1..n = paradas, n+1 = almacén.
+  const fromIsDepot = sameSpot(from, depot);
+  const keys = [fromIsDepot ? nodeKey(depot, 'depot') : null, ...stops.map((s) => nodeKey(s, s.id)), nodeKey(depot, 'depot')];
+  const point = (i) => (i === 0 ? from : i === n + 1 ? depot : stops[i - 1]);
+  const limit = now - maxAgeMin * 60000;
+  const fresh = (k) => { const p = pairs[k]; return p && p.src === 'google' && p.at >= limit ? p : null; };
+
+  // Lo que ya se sabe (de antes o de ahora) y lo que hay que pedir.
+  const known = new Map(); // "i,j" -> { m, km }
+  const next = {}; // pares que se quedan en memoria para el próximo cálculo
+  let warning, source = 'estimate';
+  if (key) {
+    const want = wantedPairs(stops, { returnToDepot });
+    // Salida: desde el almacén se piden todas (y se guardan); desde otro sitio, las más cercanas y no se guardan.
+    const fromRow = fromIsDepot ? stops.map((_, i) => [0, i + 1])
+      : nearest(from, stops, n <= FULL_UP_TO ? n : FROM_NEAREST).map((i) => [0, i + 1]);
+    const missing = [];
+    for (const [i, j] of [...fromRow, ...want]) {
+      const k = keys[i] && pairKey(keys[i], keys[j]);
+      const hit = k && fresh(k);
+      if (hit) { known.set(`${i},${j}`, hit); next[k] = hit; } else missing.push([i, j]);
+    }
+    try {
+      if (missing.length) {
+        const pts = Array.from({ length: n + 2 }, (_, i) => point(i));
+        const got = await googleMatrix(pts, pts, { key, departAt: depart, cells: missing });
+        for (const x of got) {
+          const v = { m: x.min, km: x.km, at: now, src: 'google' };
+          known.set(`${x.i},${x.j}`, v);
+          if (keys[x.i]) next[pairKey(keys[x.i], keys[x.j])] = v;
+        }
+      }
+      source = 'google';
+    } catch (e) {
+      warning = netWarning(e);
     }
   }
 
-  const n = stops.length;
+  // Minutos por kilómetro en línea recta según Google, para estimar los pares que no se han pedido.
+  const perKm = calibrate([...known.entries()].map(([ij, v]) => {
+    const [i, j] = ij.split(',').map(Number);
+    return { min: v.m, km: haversineKm(point(i), point(j)) };
+  }));
+  const f = trafficFactor(depart);
   const minutes = (i, j) => {
-    // i, j: 0 = salida, 1..n = paradas, n+1 = almacén
-    if (i === 0) return { m: mx.minutes[0][j - 1], km: mx.km[0][j - 1] };
     if (i === j) return { m: 0, km: 0 };
-    return next[pairKey(keys[i - 1], keys[j - 1])];
+    const hit = known.get(`${i},${j}`);
+    if (hit) return hit;
+    // De una parada al almacén: lo mismo que del almacén a ella, si se sabe (casi siempre es la misma vía).
+    if (j === n + 1 && known.has(`0,${i}`) && fromIsDepot) return known.get(`0,${i}`);
+    const a = point(i), b = point(j);
+    return { m: perKm ? guess(a, b, perKm) : sameSpot(a, b) ? 0 : estimate(a, b) * f, km: haversineKm(a, b) * 1.4 };
   };
 
   // A pie: dentro de un aparcamiento, de la entrega a la furgoneta y de ahí a la siguiente (sin coche);
@@ -103,19 +158,19 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
   const solve = () => (fixed ? evaluateOrder(fixed, ctx) : optimize(ctx));
   let best = solve();
 
-  // Con TomTom: se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
+  // Con Google: se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
   // y se vuelve a optimizar; si el orden cambia, se comprueba también el nuevo (máximo 3 consultas).
+  // Si la matriz ya ha fallado (sin conexión, clave mala), no se insiste.
   let traffic = false;
-  if (tomtomKey) {
+  if (key && !warning) {
     const seen = new Set();
     for (let round = 0; round < 3; round++) {
-      const key = best.order.join(',');
-      if (seen.has(key)) break;
-      seen.add(key);
+      const order = best.order.join(',');
+      if (seen.has(order)) break;
+      seen.add(order);
       const nodes = [0, ...best.order, ...(returnToDepot ? [n + 1] : [])];
-      const point = (i) => (i === 0 ? from : i === n + 1 ? depot : stops[i - 1]);
       let legsMin = null;
-      try { legsMin = await trafficLegs(nodes.map(point), { key: tomtomKey, departAt, live }); } catch (e) { if (/clave/.test(e.message)) throw e; }
+      try { legsMin = await trafficLegs(nodes.map(point), { key, departAt: depart, live }); } catch (e) { warning = e.message; break; }
       if (!legsMin) break;
       traffic = true;
       legsMin.forEach((m, k) => {
@@ -124,7 +179,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
         if (b === n + 1) back[a] = travel(a, b, m); else matrix[a][b] = travel(a, b, m);
       });
       const again = solve();
-      best = again.order.join(',') === key ? evaluateOrder(best.order, ctx) : again;
+      best = again.order.join(',') === order ? evaluateOrder(best.order, ctx) : again;
     }
   }
 
@@ -146,8 +201,8 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     late: best.late,
     wait: best.wait,
     km,
-    source: traffic ? 'tomtom' : mx.source,
-    warning: mx.warning,
+    source: traffic ? 'traffic' : source,
+    warning,
     live: traffic && !!live,
     computedAt: now,
     startMin,

@@ -2,8 +2,9 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://geoserveis.icgc.cat; connect-src 'self' https://eines.icgc.cat https://www.cartociudad.es https://nominatim.openstreetmap.org https://api.heigit.org https://api.tomtom.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="format-detection" content="telephone=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://geoserveis.icgc.cat; connect-src 'self' https://eines.icgc.cat https://www.cartociudad.es https://nominatim.openstreetmap.org https://routes.googleapis.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Ruta Escolà</title>
   <meta name="description" content="Planifica y optimiza la ruta de reparto con tráfico y horarios de entrega.">
   <meta name="theme-color" content="#0a0b0a">
@@ -14,8 +15,6 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="fonts/cormorant-garamond-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="css/app.css">
   <link rel="modulepreload" href="js/app.js">
   <link rel="modulepreload" href="js/parse.js">
@@ -23,6 +22,8 @@
   <link rel="modulepreload" href="js/planner.js">
   <link rel="modulepreload" href="js/solver.js">
   <link rel="modulepreload" href="js/store.js">
+  <link rel="modulepreload" href="js/config.js">
+  <link rel="modulepreload" href="js/textsize.js">
 </head>
 <body>
   <header class="top">
