@@ -14,8 +14,8 @@ export const DEFAULT_DEPOT = {
 
 const empty = () => ({
   settings: {
-    // Clave de Google de este móvil. Normalmente vacía: se usa la de la empresa (js/config.js).
-    googleKey: '',
+    orsKey: '',
+    tomtomKey: '',
     depot: DEFAULT_DEPOT,
     shiftStart: '07:30',
     // Descarga: lo fijo de una entrega una vez aparcado. Lo que suman las cajas (viajes con la carretilla)
@@ -54,9 +54,7 @@ function load() {
       if (clean) clients[clean.key] = clean;
     }
     const settings = { ...base.settings, ...(data.settings || {}) };
-    // 26/11/2026: los tiempos y el tráfico pasan a ser de Google. Las claves de openrouteservice y TomTom, y
-    // los tiempos entre paradas que se guardaban de openrouteservice, ya no sirven.
-    delete settings.orsKey; delete settings.tomtomKey;
+    delete settings.googleKey;
     for (const r of Object.values(data.routes || {})) if (r && typeof r === 'object') r.pairs = {};
     delete settings.textScale;
     // 04/11/2026: los horarios, que estaban apagados (1.9.0), vuelven encendidos y con margen.
@@ -297,7 +295,7 @@ export function exportClients() {
   return JSON.stringify({ app: 'ruta-escola', version: 1, exportedAt: new Date().toISOString(), clients: state.clients }, null, 2);
 }
 
-// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves (son personales) ni el gasto de Google.
+// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves ni el uso de los servicios.
 export function exportBackup() {
   const { googleKey, tomtomKey, orsKey, usage, ...rest } = state.settings;
   const routes = Object.fromEntries(Object.entries(state.routes).map(([d, r]) => [d, { ...r, pairs: {} }]));

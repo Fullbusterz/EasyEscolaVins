@@ -19,7 +19,7 @@ Hace falta una cuenta de **Apple Developer** (99 € al año). No hace falta Mac
 3. **La app en App Store Connect.** En <https://appstoreconnect.apple.com/apps>, pulsa **+** → *Nueva app*. Plataforma iOS, nombre «Ruta Escolà», idioma Español, el *Bundle ID* del paso 2 y SKU `ruta-escola`.
 4. **Una clave para que GitHub suba la app.** En App Store Connect → *Usuarios y acceso* → *Integraciones* → *App Store Connect API* → **+**. Nombre «GitHub», acceso **Administrador**, porque hace falta para firmar la app desde GitHub. Descarga el archivo `.p8`, que solo se puede descargar una vez, y apunta el **ID de la clave** y el **ID del emisor** (*Issuer ID*), que sale arriba.
 5. **El Team ID.** En <https://developer.apple.com/account> → *Membership details* → *Team ID* (10 letras y números).
-6. **Los cuatro secretos en GitHub.** En el repositorio → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*:
+6. **Los cuatro secretos de Apple en GitHub.** En el repositorio → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*:
 
    | Nombre | Qué va |
    |---|---|
@@ -28,7 +28,7 @@ Hace falta una cuenta de **Apple Developer** (99 € al año). No hace falta Mac
    | `ASC_KEY_P8` | Todo el contenido del archivo `.p8`, de `-----BEGIN PRIVATE KEY-----` a `-----END PRIVATE KEY-----` |
    | `APPLE_TEAM_ID` | El Team ID (paso 5) |
 
-7. **La clave de Google para la app.** Es una clave restringida a *Apps de iOS* con el identificador `com.flixescola.ruta`. Va como quinto secreto, `GOOGLE_MAPS_KEY_IOS`, no en el código. Ver «Google Maps» en el [LEEME principal](../LEEME.md).
+7. **Las claves de rutas.** La web y la app de iPhone usan las mismas claves de empresa: `TOMTOM_KEY` y `ORS_KEY`, ya añadidas en el [LEEME principal](../LEEME.md). No hace falta una clave aparte para iPhone.
 8. **Compilar.** En GitHub → *Actions* → **App de iPhone (TestFlight)** → *Run workflow*. Tarda unos 15-20 minutos. Al acabar, la compilación aparece en App Store Connect → *TestFlight* (Apple la procesa unos minutos más).
 
 ## Dar la app a los repartidores (TestFlight)

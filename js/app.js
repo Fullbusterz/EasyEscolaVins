@@ -1,6 +1,6 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
-import { geocode, navUrl, currentPosition, coordsFromText, trafficLegs, haversineKm, onGoogleUsage } from './geo.js';
-import { GOOGLE_MAPS_KEY, GOOGLE_MAPS_KEY_IOS, GOOGLE_MATRIX } from './config.js';
+import { geocode, navUrl, currentPosition, coordsFromText, orsMatrix, trafficLegs, haversineKm, onRouteUsage, netWarning } from './geo.js';
+import { TOMTOM_KEY, ORS_KEY } from './config.js';
 import { isNative, plugin, tap, shareFileNative, setupNativeShell } from './native.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
@@ -253,41 +253,42 @@ function mapApi() {
 
 function settings() { return store.settings(); }
 function currentRoute() { return store.route(ui.date); }
-// La clave de Google: la de este móvil si alguien ha puesto una, si no la de la empresa (js/config.js).
-// En la app de iPhone, la suya (restringida a la app); si no hay, la de la web.
-const COMPANY_KEY = ((isNative && GOOGLE_MAPS_KEY_IOS) || GOOGLE_MAPS_KEY || '').trim();
-const googleKey = () => (settings().googleKey || COMPANY_KEY).trim();
-const companyKey = () => !!COMPANY_KEY;
+// Se usan las claves del móvil si están guardadas; si no, las de la empresa (js/config.js).
+const COMPANY_TOMTOM_KEY = TOMTOM_KEY.trim();
+const COMPANY_ORS_KEY = ORS_KEY.trim();
+const tomtomKey = () => (settings().tomtomKey || COMPANY_TOMTOM_KEY).trim();
+const orsKey = () => (settings().orsKey || COMPANY_ORS_KEY).trim();
 
-// Los tiempos entre paradas de Google se reutilizan en cada «Siguiente», pero solo en memoria: sus
-// condiciones no dejan guardarlos en el móvil. Si iOS cierra la app, se vuelven a pedir los que hagan falta.
+// Los tiempos entre paradas de ORS se reutilizan en cada «Siguiente», solo en memoria.
 const PAIRS = new Map(); // fecha -> pares
 const pairsOf = (date) => PAIRS.get(date) || {};
 const keepPairs = (date, pairs) => { PAIRS.set(date, pairs || {}); };
 
-// Lo que se ha consultado a Google este mes en este móvil, para saber lo que se gasta (Ajustes).
+// Consultas hechas este mes y hoy desde este móvil.
 const monthIso = () => store.isoDate().slice(0, 7);
-onGoogleUsage(({ elements = 0, routes = 0 }) => {
+onRouteUsage(({ matrix = 0, routes = 0 }) => {
   const s = settings();
-  const u = s.usage?.month === monthIso() ? s.usage : { month: monthIso(), elements: 0, routes: 0 };
-  const today = s.usage?.day === todayIso() ? s.usage.dayRoutes || 0 : 0;
-  store.setSettings({ usage: { month: u.month, elements: u.elements + elements, routes: u.routes + routes, day: todayIso(), dayRoutes: today + routes } });
+  const u = s.usage?.month === monthIso() ? s.usage : { month: monthIso(), matrix: 0, routes: 0 };
+  const day = s.usage?.day === todayIso() ? s.usage : { day: todayIso(), dayRoutes: 0, dayMatrix: 0 };
+  store.setSettings({ usage: { month: u.month, matrix: (u.matrix || 0) + matrix, routes: (u.routes || 0) + routes, day: todayIso(), dayRoutes: (day.dayRoutes || 0) + routes, dayMatrix: (day.dayMatrix || 0) + matrix } });
 });
 
-// Gratis para toda la empresa. Google regala unas 5.000 rutas con tráfico al mes para toda la cuenta, y somos
-// unos 15 repartidores: unas 10 por repartidor y día. Así que no se pregunta en cada «Siguiente»: lo que dijo
-// Google vale un rato (se reutiliza en memoria) y solo se vuelve a preguntar pasado ese rato o al pulsar
-// «Recalcular». Y cada móvil, como mucho 10 consultas automáticas al día, para no gastar la parte de otros.
-const TRAFFIC_FRESH_MIN = 75;
-const AUTO_PER_DAY = 10;
-const MANUAL_PER_DAY = 16;
-const TRAFFIC = new Map(); // fecha -> { at, perKm, pairs }: lo último que dijo Google, solo en memoria
+// Topes gratuitos para unos 15 móviles: TomTom 40 al día × 15 × 31 = 18.600/mes (20.000 gratis).
+// ORS 25 matrices al día × 15 = 375/día (500 gratis). Los tiempos se reutilizan durante 30 minutos.
+const TRAFFIC_FRESH_MIN = 30;
+const AUTO_PER_DAY = 30;
+const MANUAL_PER_DAY = 40;
+const ORS_PER_DAY = 25;
+const TOMTOM_POINTS_PER_REQUEST = 150;
+const TRAFFIC = new Map(); // fecha -> { at, perKm, pairs }: lo último de TomTom, solo en memoria
 const routesToday = () => (settings().usage?.day === todayIso() ? settings().usage.dayRoutes || 0 : 0);
-function trafficPlan(date, { forced = false, rounds = 1 } = {}) {
+const matrixToday = () => (settings().usage?.day === todayIso() ? settings().usage.dayMatrix || 0 : 0);
+function trafficPlan(date, { forced = false, rounds = 1, points = 2 } = {}) {
   const last = TRAFFIC.get(date);
   const fresh = last && Date.now() - last.at < TRAFFIC_FRESH_MIN * 60000;
   const room = (forced ? MANUAL_PER_DAY : AUTO_PER_DAY) - routesToday();
-  const ask = GOOGLE_MATRIX ? 3 : (forced || !fresh) && room > 0 ? Math.min(rounds, room) : 0;
+  const perRound = Math.max(1, Math.ceil((points - 1) / (TOMTOM_POINTS_PER_REQUEST - 1)));
+  const ask = (forced || !fresh) && room >= perRound ? Math.min(rounds, Math.floor(room / perRound)) : 0;
   return { trafficRounds: ask, hint: last || null };
 }
 function keepTraffic(date, plan) {
@@ -297,7 +298,7 @@ function keepTraffic(date, plan) {
 
 function signature(r) {
   return JSON.stringify([
-    settings().shiftStart, settings().returnToDepot, !!googleKey(), !!settings().useWindows,
+    settings().shiftStart, settings().returnToDepot, !!orsKey(), !!tomtomKey(), !!settings().useWindows,
     r.stops.map((s) => [s.id, s.lat, s.lon, goTo(s), s.windows, stopMinutes(s), s.timing || '', !!s.windowsConfirmed]),
     parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
     r.manual || null,
@@ -320,10 +321,10 @@ function defaultDate() {
 function render() {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const eng = $('#engine');
-  const live = !!googleKey();
-  eng.className = `engine ${live ? 'live' : 'off'}`;
-  eng.innerHTML = `<span class="dot"></span>${live ? 'Tráfico de Google' : 'Sin tráfico'}`;
-  eng.setAttribute('aria-label', live ? 'Tiempos y tráfico de Google Maps. Abrir ajustes' : 'Sin tiempos de Google: la ruta es aproximada. Abrir ajustes');
+  const traffic = !!tomtomKey(), road = !!orsKey();
+  eng.className = `engine ${traffic || road ? 'live' : 'off'}`;
+  eng.innerHTML = `<span class="dot"></span>${traffic ? 'Tráfico real' : road ? 'Tiempos reales' : 'Sin tráfico'}`;
+  eng.setAttribute('aria-label', traffic ? 'Tráfico real. Abrir ajustes' : road ? 'Tiempos reales. Abrir ajustes' : 'Sin tráfico. Abrir ajustes');
 
   const view = $('#view');
   let bar = '';
@@ -402,9 +403,9 @@ function firstSteps() {
   let n = 0;
   const steps = [];
   // Con la clave de la empresa no hay nada que configurar: se salta el paso.
-  if (!googleKey()) {
-    steps.push(step(false, ++n, 'Pide la clave de Google al encargado',
-      `<div class="small muted">Sin ella la ruta sale aproximada, sin tráfico. Se pone en Ajustes → Más ajustes.</div>`));
+  if (!orsKey() && !tomtomKey()) {
+    steps.push(step(false, ++n, 'Pide al encargado que active las rutas',
+      `<div class="small muted">Sin ellas la ruta sale aproximada. Se activan en Ajustes.</div>`));
   }
   steps.push(step(store.clientList().length > 0, ++n, '¿Te pasa un compañero sus clientes?',
     `<div class="small muted">Si te ha mandado su archivo, impórtalo y tendrás sus clientes y el almacén.</div>
@@ -550,12 +551,12 @@ function renderPlanning(r) {
   return html;
 }
 
-// De dónde salen las horas de la ruta, en palabras. 'tomtom' y 'ors' son de rutas calculadas antes de Google.
+// De dónde salen las horas de la ruta, en palabras. Conserva los textos de planes antiguos.
 function sourceText(p) {
-  if (p.source === 'traffic' || p.source === 'tomtom') return `Con el tráfico de Google ${p.live ? 'de ese momento' : 'previsto para esa hora'}`;
-  if (p.source === 'google' || p.source === 'ors') return 'Con tiempos de Google y tráfico estimado por hora';
-  if (p.source === 'estimate' && googleKey() && !p.warning) return 'Con distancias aproximadas';
-  return googleKey() ? 'Con distancias aproximadas: Google no ha respondido' : 'Con distancias aproximadas: falta la clave de Google';
+  if (p.source === 'traffic' || p.source === 'tomtom') return `Con el tráfico de TomTom ${p.live ? 'de ese momento' : 'previsto para esa hora'}`;
+  if (p.source === 'google' || p.source === 'ors') return 'Con tiempos reales de carretera y tráfico estimado por hora';
+  if (p.source === 'estimate' && (orsKey() || tomtomKey()) && !p.warning) return 'Con distancias aproximadas';
+  return (orsKey() || tomtomKey()) ? 'Con distancias aproximadas: el servicio de rutas no ha respondido' : 'Con distancias aproximadas: faltan las claves del servicio de rutas';
 }
 
 // ---------- Orden a mano ----------
@@ -963,19 +964,20 @@ function renderBridge() {
   </div>`;
 }
 
-function googleCard() {
+function routesCard() {
   const s = settings();
-  const key = googleKey();
   const u = s.usage?.month === monthIso() ? s.usage : null;
-  const status = key
-    ? `<div class="notice info" style="margin-top:0">${I.check}<div>Tiempos y tráfico de <b>Google Maps</b>${companyKey() && !s.googleKey ? ', con la clave de la empresa' : ''}.</div></div>`
-    : `<div class="notice warn" style="margin-top:0">${I.warn}<div>Falta la clave de Google: la ruta se ordena por distancia aproximada, sin tráfico. La pone el encargado una vez para todos; si te ha dado una, pégala aquí.</div></div>`;
+  const status = COMPANY_TOMTOM_KEY || COMPANY_ORS_KEY
+    ? `<div class="notice info" style="margin-top:0">${I.check}<div>Claves de empresa: TomTom ${COMPANY_TOMTOM_KEY ? 'activa' : 'sin activar'} · openrouteservice ${COMPANY_ORS_KEY ? 'activo' : 'sin activar'}.</div></div>`
+    : `<div class="notice warn" style="margin-top:0">${I.warn}<div>El encargado aún no ha activado las rutas de empresa.</div></div>`;
   return `<div class="card">
     ${status}
-    <label class="field"><span>Clave de Google de este móvil${companyKey() ? ' (normalmente vacía)' : ''}</span>
-      <input class="input" id="set-google" value="${esc(s.googleKey || '')}" placeholder="${companyKey() ? 'Se usa la de la empresa' : 'Pega aquí la clave'}" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-    <button class="btn line block" data-action="test-google" ${ui.testing ? 'disabled' : ''}>${ui.testing ? '<span class="spin"></span>Probando…' : 'Probar Google'}</button>
-    <div class="hint" style="margin-top:10px">${u ? `Este mes, desde este móvil: ${u.elements.toLocaleString('es-ES')} tiempos entre paradas y ${u.routes.toLocaleString('es-ES')} rutas con tráfico.` : 'Este mes aún no se ha consultado a Google desde este móvil.'}</div>
+    <label class="field"><span>Clave de TomTom de este móvil</span>
+      <input class="input" id="set-tomtom" value="${esc(s.tomtomKey || '')}" placeholder="${COMPANY_TOMTOM_KEY ? 'Se usa la de la empresa' : 'Opcional'}" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span>Clave de openrouteservice de este móvil</span>
+      <input class="input" id="set-ors" value="${esc(s.orsKey || '')}" placeholder="${COMPANY_ORS_KEY ? 'Se usa la de la empresa' : 'Opcional'}" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <button class="btn line block" data-action="test-routes" ${ui.testing ? 'disabled' : ''}>${ui.testing ? '<span class="spin"></span>Probando…' : 'Probar'}</button>
+    <div class="hint" style="margin-top:10px">${u ? `Este mes, desde este móvil: ${(u.matrix || 0).toLocaleString('es-ES')} matrices y ${(u.routes || 0).toLocaleString('es-ES')} rutas con tráfico.` : 'Este mes aún no se han hecho consultas desde este móvil.'}</div>
   </div>`;
 }
 
@@ -1014,8 +1016,8 @@ function renderSettings() {
   <details class="more" ${ui.moreOpen ? 'open' : ''}>
     <summary data-action="toggle-more">Más ajustes</summary>
 
-    <h2 class="section-title">Google Maps (tiempos y tráfico)</h2>
-    ${googleCard()}
+    <h2 class="section-title">Rutas y tráfico</h2>
+    ${routesCard()}
 
     <h2 class="section-title">Minutos por parada</h2>
     <div class="card">
@@ -1034,7 +1036,7 @@ function renderSettings() {
   <div class="tiny faint" style="text-align:center;margin:22px 0 4px;line-height:1.6">Ruta Escolà · v${VERSION}${isNative ? ' · app de iPhone' : ''}<br>
     Clientes y rutas se guardan en este móvil. Para buscar direcciones y calcular tiempos se consultan
     servicios de mapas; tu posición solo se usa para calcular la siguiente parada.<br>
-    Tiempos y tráfico: Google Maps<br>
+    Rutas: © openrouteservice by HeiGIT · Tráfico: © TomTom<br>
     Direcciones: © <a href="https://www.icgc.cat/" target="_blank" rel="noopener">ICGC</a> (CC BY 4.0) ·
     <a href="https://www.cartociudad.es/" target="_blank" rel="noopener">CartoCiudad</a> © IGN (CC BY 4.0) ·
     © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a><br>
@@ -1127,7 +1129,7 @@ function candidatesHtml(sh) {
   if (sh.candidates?.length) {
     return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}" aria-pressed="${sh.picked === i}">${I.pin}<span>${esc(c.label)}${c.doubt ? `<span class="doubt">${c.otherTown ? 'Otra población' : c.otherNumber ? 'Otro número' : 'Otra calle'}: compruébala</span>` : ''}</span></button>`).join('')}</div>`;
   }
-  if (sh.candidates && !sh.candidates.length) return '<div class="hint" style="color:var(--warn)">No he encontrado esa dirección. Prueba con calle, número y población, o pega un enlace de Google Maps.</div>';
+  if (sh.candidates && !sh.candidates.length) return '<div class="hint" style="color:var(--warn)">No he encontrado esa dirección. Prueba con calle, número y población, o pega un enlace de mapas.</div>';
   return '';
 }
 
@@ -1515,12 +1517,11 @@ async function optimize({ recalc = false } = {}) {
   departAt.setMinutes(startMin);
   const live = recalc && today;
   const before = r.plan && !isDirty(r) ? r.plan.order.join() : null;
-  ui.busy = live && googleKey() ? 'Mirando el tráfico…' : 'Calculando la ruta…';
+  ui.busy = live && tomtomKey() ? 'Mirando el tráfico…' : 'Calculando la ruta…';
   render();
   try {
-    // Para que toda la empresa quepa en lo gratuito de Google: como mucho 2 consultas al planificar, y ninguna si
-    // se ha preguntado hace poco (salvo con «Recalcular»).
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: googleKey(), live, matrix: GOOGLE_MATRIX, ...trafficPlan(ui.date, { forced: recalc, rounds: 2 }), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
+    // Se paran las matrices al llegar al tope del móvil; la ruta sigue con estimaciones calibradas.
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: matrixToday() < ORS_PER_DAY ? orsKey() : '', tomtomKey: tomtomKey(), live, ...trafficPlan(ui.date, { forced: recalc, rounds: 2, points: stops.length + 1 + Number(s.returnToDepot) }), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
     keepPairs(ui.date, plan.pairs); delete plan.pairs;
     keepTraffic(ui.date, plan);
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
@@ -1579,8 +1580,8 @@ async function replanActive(msg, { forced = false } = {}) {
   const parkedAt = g >= 0 && parking[g].ids.some((id) => active.some((a) => a.id === id)) ? g : null;
   try {
     const plan = await computePlan({
-      // En ruta: una consulta si lo último de Google ya es viejo o si se pulsa «Recalcular»; si no, ninguna.
-      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: googleKey(), live: true, matrix: GOOGLE_MATRIX, ...trafficPlan(ui.date, { forced }),
+      // En ruta: se aprovechan las matrices y el tráfico recientes para reducir consultas.
+      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), orsKey: matrixToday() < ORS_PER_DAY ? orsKey() : '', tomtomKey: tomtomKey(), live: true, ...trafficPlan(ui.date, { forced, points: active.length + 1 + Number(s.returnToDepot) }),
       stops: active.map(planStop), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking, parkedAt, fixedOrder: r.manual || null,
     });
     keepPairs(ui.date, plan.pairs); delete plan.pairs;
@@ -1880,7 +1881,7 @@ const actions = {
   close: () => requestCloseSheet(),
   'toggle-more': () => { ui.moreOpen = !ui.moreOpen; render(); },
   'nav-app': (el) => { store.setSettings({ nav: el.dataset.v === 'gmaps' ? 'gmaps' : 'waze' }); render(); },
-  'test-google': () => testGoogle(),
+  'test-routes': () => testRoutes(),
   'change-depot': () => openSheet({ kind: 'depot', draft: { address: '', lat: null, lon: null, label: '' } }),
   'save-depot': () => {
     const d = ui.sheet.draft;
@@ -2017,20 +2018,20 @@ async function pasteAdd() {
 
 const PROBE = [{ lat: 41.372083, lon: 2.077356 }, { lat: 41.3756, lon: 2.1316 }]; // almacén → Carrer de Sants
 
-// Prueba la clave de Google con una ruta de verdad (una consulta): almacén → Carrer de Sants, ahora.
-async function testGoogle() {
-  const input = $('#set-google');
-  if (input) store.setSettings({ googleKey: input.value.trim() });
-  const key = googleKey();
-  if (!key) { render(); return toast('Falta la clave de Google: la ruta será aproximada', 4000); }
-  ui.testing = true; render();
-  try {
-    const legs = await trafficLegs(PROBE, { key, live: true });
-    if (!legs) throw new Error('Google no ha respondido; prueba en un rato');
-    toast(`Funciona ✓ Del almacén a Sants ahora: ${Math.round(legs[0])} min`, 4500);
-  } catch (e) {
-    toast(e.message || 'La clave no funciona', 6000);
+// Prueba ambos servicios con un tramo entre el almacén y Carrer de Sants.
+async function testRoutes() {
+  for (const [id, name] of [['set-tomtom', 'tomtomKey'], ['set-ors', 'orsKey']]) {
+    const input = $(`#${id}`);
+    if (input) store.setSettings({ [name]: input.value.trim() });
   }
+  const tk = tomtomKey(), ok = orsKey();
+  if (!tk && !ok) { render(); return toast('Aún no hay claves para probar', 4000); }
+  ui.testing = true; render();
+  const checks = await Promise.all([
+    ok ? orsMatrix([PROBE[0]], [PROBE[1]], { key: ok }).then((x) => (x.length ? 'bien ✓' : 'no responde'), (e) => netWarning(e)) : Promise.resolve('sin clave'),
+    tk ? trafficLegs(PROBE, { key: tk, live: true }).then((x) => (x ? 'bien ✓' : 'no responde'), (e) => netWarning(e)) : Promise.resolve('sin clave'),
+  ]);
+  toast(`Tiempos (openrouteservice): ${checks[0]} · Tráfico (TomTom): ${checks[1]}`, 7000);
   ui.testing = false;
   render();
 }
@@ -2153,7 +2154,8 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-asktold') { store.setSettings({ askTold: t.checked }); render(); }
   if (t.id === 'set-return') store.setSettings({ returnToDepot: t.checked });
   if (t.id === 'set-windows') { store.setSettings({ useWindows: t.checked }); render(); }
-  if (t.id === 'set-google') { store.setSettings({ googleKey: t.value.trim() }); render(); }
+  if (t.id === 'set-tomtom') { store.setSettings({ tomtomKey: t.value.trim() }); render(); }
+  if (t.id === 'set-ors') { store.setSettings({ orsKey: t.value.trim() }); render(); }
   if (t.id === 'import-file' && t.files[0]) {
     t.files[0].text().then(async (txt) => {
       t.value = '';

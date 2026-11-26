@@ -1,6 +1,6 @@
 # Ruta Escolà
 
-App para el móvil que ordena la ruta de reparto con el tráfico de Google Maps y los horarios de entrega de cada cliente. En iPhone es una app de verdad (TestFlight, ver [native/LEEME.md](native/LEEME.md)); en Android y en el ordenador, una web que se instala como una app.
+App para el móvil que ordena la ruta de reparto con tiempos de openrouteservice y tráfico de TomTom y los horarios de entrega de cada cliente. En iPhone es una app de verdad (TestFlight, ver [native/LEEME.md](native/LEEME.md)); en Android y en el ordenador, una web que se instala como una app.
 
 ## Cómo se usa
 
@@ -34,51 +34,27 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 
 ## Servicios de mapas
 
-- **Tiempos de conducción y tráfico: Google Maps** (Routes API), el mismo tráfico que ven Google Maps y Waze. Waze no deja que otras apps le pidan rutas, pero es de Google y comparte sus datos de tráfico. Para ir a la parada se sigue abriendo **Waze o Google Maps**, el que se elija en Ajustes.
+- **Rutas y tráfico: TomTom y openrouteservice.** openrouteservice calcula los tiempos de carretera entre paradas. TomTom añade el tráfico a la ruta elegida. Para ir a una parada se sigue abriendo **Waze o Google Maps**, el que se elija en Ajustes.
 - **Direcciones:** geocodificador oficial del ICGC y, si no encuentra la dirección, CartoCiudad (IGN). Los dos son CC BY 4.0, así que se pueden guardar y compartir entre repartidores. Antes de buscar, la app traduce "Calle Mayor, Esplugas" a "Carrer Major, Esplugues". Si el resultado cae en otra población o en otra calle, la parada queda "Sin ubicar" hasta que la confirmes.
 - **Locales por su nombre:** OpenStreetMap (Nominatim), como mucho una petición por segundo.
 - **Mapa:** cartografía del ICGC (CC BY 4.0, con datos de OpenStreetMap fuera de Cataluña), dibujada con Leaflet (incluido en `vendor/`).
 
-### Cómo usa la app Google (sin pagar)
+### Rutas y tráfico: TomTom y openrouteservice
 
-Para que toda la empresa (unos 15 repartidores) quepa en lo que Google regala cada mes, la app solo hace una consulta: **la ruta elegida, con tráfico** (*Compute Routes*), con todas las paradas en orden. Y la hace pocas veces:
+El encargado crea dos cuentas gratuitas, sin tarjeta:
 
-- **Al planificar:** primero se ordena por distancia y luego se pregunta a Google por esa ruta con el tráfico previsto. Con lo que contesta se corrigen los tramos con atasco y se ajustan los demás tiempos a la velocidad real de ese día. Si el orden cambia, se pregunta otra vez. Como mucho son 2 consultas.
-- **En «Siguiente»:** se reutiliza lo que dijo Google la última vez. Solo se vuelve a preguntar si han pasado más de **75 minutos**.
-- **«Recalcular»:** pregunta siempre, porque lo ha pedido el repartidor.
-- **Cada móvil, como mucho 10 consultas automáticas al día**, y 16 contando los «Recalcular». Pasado eso sigue con lo último que dijo Google y la velocidad de ese día. Así nadie gasta la parte de los demás.
+1. En <https://developer.tomtom.com>, crea una cuenta gratuita y copia la clave del panel.
+2. En <https://account.heigit.org>, crea una cuenta, elige el plan Standard gratuito y copia la clave.
+3. En GitHub → *Settings* → *Secrets and variables* → *Actions*, crea los secretos `TOMTOM_KEY` y `ORS_KEY` con esas claves. La publicación las mete en la web y en la app de iPhone. Mantén `PUBLICAR_CON_ACTIONS = si` y Pages → *Source: GitHub Actions*.
 
-Hay un modo más fino que además pide la tabla de tiempos entre paradas (`GOOGLE_MATRIX` en `js/config.js`). Está **apagado**, porque con varios repartidores se pasa de lo gratuito.
+Las claves personales siguen funcionando si algún móvil ya tenía una guardada. En Ajustes → Más ajustes se puede probar cada servicio.
 
-Los tiempos de Google **no se guardan en el móvil**: sus condiciones no lo permiten. Se quedan en memoria mientras la app está abierta. En Ajustes → Más ajustes se ve cuánto ha consultado ese móvil este mes.
+### Límites gratuitos
 
-### Poner la clave de Google (el encargado, una vez para todos)
+- **TomTom:** 20.000 consultas de ruta al mes. La app limita cada móvil a 40 al día; con 15 móviles durante 31 días son 18.600. Si se agota la cuota, las consultas se bloquean y se usan tiempos aproximados.
+- **openrouteservice Standard:** 500 matrices al día y 40 por minuto para toda la empresa. La app limita cada móvil a 25 al día; con 15 móviles son 375 al día. Al llegar al límite del móvil, usa tiempos aproximados y sigue funcionando.
 
-Los repartidores no tienen que hacer nada: la clave de la empresa va dentro de la app.
-
-**La clave no está en el código.** El repositorio es público y hay robots que buscan claves de Google en GitHub. Por eso `js/config.js` la tiene vacía y la clave vive en los **secretos del repositorio**. Al publicar, los workflows la meten en la copia que se publica (`tools/put-keys.mjs`):
-
-- `GOOGLE_MAPS_KEY`: la web. La publica `.github/workflows/web.yml` en GitHub Pages (Pages → *Source: GitHub Actions* y la variable `PUBLICAR_CON_ACTIONS = si`).
-- `GOOGLE_MAPS_KEY_IOS`: la app de iPhone. La mete `.github/workflows/ios.yml` al compilar.
-
-Además, cada clave va protegida en la consola de Google:
-
-1. Restringida a quien la usa. La de la web, a *Sitios web* con la dirección de la web (`https://…/*`). La del iPhone, a *Apps de iOS* con `com.flixescola.ruta`. Una clave no puede estar restringida a las dos cosas a la vez.
-2. Restringida a una sola API: **Routes API**.
-3. Con **tope diario** en *Cuotas*: 160 rutas al día, y 0 a la matriz.
-4. Con un **presupuesto de 1 €** con aviso por correo, en *Facturación*.
-
-Quien abra la web publicada todavía puede ver la clave (pasa con cualquier web que use Google Maps). Con las restricciones y el tope, lo peor que puede hacer es gastar el tope de un día: no puede costar dinero.
-
-Los pasos uno por uno están en `PASOS-EN-EL-PC.md`. Si un repartidor necesitara otra clave, se pone en su móvil en Ajustes → Más ajustes. Esa no viaja con «Pasar configuración» ni con las copias.
-
-### Cuánto cuesta: nada, si se pone el tope
-
-Google regala cada mes **5.000 rutas con tráfico** para toda la cuenta de la empresa, no por repartidor. Es el dato de 2025; compruébalo en <https://developers.google.com/maps/billing-and-pricing/pricing>. Pide una tarjeta para dar de alta la cuenta, pero no cobra mientras no se pase de ahí.
-
-Un repartidor gasta unas **9 rutas al día**: 2 al planificar, unas 5 a lo largo de la ruta (una cada 75 minutos) y algún «Recalcular». Con **15 repartidores** son unas 3.000 al mes, por debajo de las 5.000.
-
-Para que **nunca** se pueda cobrar nada, en la consola de Google se pone un **tope de 160 rutas al día** (5.000 entre 31 días). Si un día se llega al tope, la app sigue funcionando con distancias aproximadas hasta el día siguiente.
+Las dos cuentas son gratuitas y no piden tarjeta: no se puede generar ningún cobro. Si alguien copia una clave, como mucho se gasta la cuota y la app usa rutas aproximadas hasta que se renueve.
 
 ## Instalar en el móvil
 
@@ -97,6 +73,6 @@ La app usa la letra del propio móvil y, en iPhone, sigue el **«Tamaño del tex
 
 - `npm test`: tests del optimizador, del lector de listas y de los aparcamientos.
 - `node tools/dum-bcn.mjs <csv>`: regenera `data/dum-bcn.json` con el CSV de zonas de carga y descarga de Open Data BCN.
-- `GOOGLE_KEY=… node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat (con clave de Google, tiempos de verdad; sin ella, estimados).
+- `ORS_KEY=… TOMTOM_KEY=… node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat (con las claves de empresa, tiempos de verdad; sin ellas, estimados).
 - `native/`: la app de iPhone (Capacitor). Ver [native/LEEME.md](native/LEEME.md).
 - Al publicar cambios, sube `VERSION` en `sw.js` y en `js/app.js`: los móviles verán "Hay una versión nueva · Actualizar".

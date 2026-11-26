@@ -1,28 +1,5 @@
-// Configuración de la empresa: lo que vale igual para todos los repartidores y no tiene que tocar nadie.
-//
-// GOOGLE_MAPS_KEY: la clave de Google Maps Platform de Escolà para los tiempos de conducción y el tráfico
-// (Routes API). La tienen todos los móviles al actualizar la app: los repartidores no crean cuentas ni pegan
-// claves. Cómo sacarla y protegerla: LEEME.md, «Google Maps».
-//
-// AQUÍ SE QUEDA VACÍA. El repositorio es público y hay robots que buscan claves en GitHub: la clave va en los
-// secretos del repositorio (GOOGLE_MAPS_KEY y GOOGLE_MAPS_KEY_IOS) y la meten los workflows al publicar
-// (.github/workflows/web.yml y ios.yml, con tools/put-keys.mjs).
-//
-// Va a la vista de cualquiera que abra la web (es una clave de navegador, como las de cualquier mapa de
-// Google en una página), así que en la consola de Google tiene que estar:
-//   - restringida a la dirección de esta web (Sitios web: https://<tu-dominio>/*),
-//   - restringida a la API «Routes API», y
-//   - con un tope de consultas al día (Cuotas), para que nunca pueda costar más de lo previsto.
-// Si se deja vacía, cada móvil puede poner la suya en Ajustes → Más ajustes.
-export const GOOGLE_MAPS_KEY = '';
-
-// GOOGLE_MAPS_KEY_IOS: la clave para la app de iPhone (native/). Una clave de Google solo puede estar
-// restringida a webs o a apps, no a las dos cosas, así que la app lleva la suya, restringida a apps de iOS
-// con el identificador com.flixescola.ruta (y también a «Routes API» y con tope de consultas).
-// Si se deja vacía, la app de iPhone usa la de arriba (que entonces no puede estar restringida a la web).
-export const GOOGLE_MAPS_KEY_IOS = '';
-
-// GOOGLE_MATRIX: pedir también a Google la tabla de tiempos entre paradas. Apagado: así toda la empresa cabe en
-// lo que Google regala cada mes (solo se pide la ruta con tráfico, y no en cada «Siguiente»: ver app.js). Encenderlo da
-// un orden algo más fino, pero con varios repartidores se pasa de lo gratuito (ver LEEME, «Cuánto cuesta»).
-export const GOOGLE_MATRIX = false;
+// Claves de la empresa: GitHub secrets TOMTOM_KEY y ORS_KEY, que se meten al publicar con tools/put-keys.mjs.
+// Las dos cuentas son gratuitas y no piden tarjeta. Si alguien copia una clave, como mucho se gasta la cuota
+// y la app usa rutas aproximadas; no se puede generar ningún cobro.
+export const TOMTOM_KEY = '';
+export const ORS_KEY = '';

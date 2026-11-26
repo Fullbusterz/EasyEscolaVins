@@ -1,7 +1,7 @@
 # La app de iPhone: se compila en un Mac de GitHub y se sube a TestFlight, sin Mac propio.
 # Se lanza a mano (Actions → «App de iPhone» → Run workflow) o al subir una etiqueta ios-v*.
 # Antes hace falta, una sola vez, lo de native/LEEME.md: cuenta de Apple Developer, la app creada en
-# App Store Connect y cuatro secretos en el repositorio.
+# App Store Connect y los secretos de Apple y de rutas en el repositorio.
 name: App de iPhone (TestFlight)
 
 on:
@@ -21,8 +21,8 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      # La clave de Google de la app de iPhone (restringida a com.flixescola.ruta): un secreto, nunca en el código.
-      GOOGLE_MAPS_KEY_IOS: ${{ secrets.GOOGLE_MAPS_KEY_IOS }}
+      TOMTOM_KEY: ${{ secrets.TOMTOM_KEY }}
+      ORS_KEY: ${{ secrets.ORS_KEY }}
     steps:
       - uses: actions/checkout@v4
 

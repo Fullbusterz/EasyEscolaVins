@@ -6,7 +6,7 @@ const cap = () => { try { return globalThis.Capacitor || null; } catch { return 
 
 export const isNative = (() => { try { return !!cap()?.isNativePlatform?.(); } catch { return false; } })();
 
-// El identificador de la app en el iPhone: Google lo pide junto a la clave si está restringida a esta app.
+// Identificador de la app de iPhone, igual que en native/capacitor.config.json.
 export const IOS_BUNDLE_ID = 'com.flixescola.ruta';
 
 /** Un plugin nativo por su nombre (Portal, Haptics, Share…), o null si no está (en la web, siempre). */

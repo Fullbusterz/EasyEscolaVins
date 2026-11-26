@@ -1,15 +1,15 @@
-// Une los tiempos de Google con el optimizador.
+// Une los tiempos de carretera y el tráfico con el optimizador.
 //
-// Pedir a Google todos los pares de 25 paradas son 676 tiempos en cada cálculo, y se pagan uno a uno. Pero
+// Pedir todos los pares de 25 paradas son 676 tiempos en cada cálculo. Pero
 // una buena ruta casi nunca salta de una punta a la otra: va de una parada a alguna de sus vecinas. Así que
 // se piden solo los pares entre cada parada y sus vecinas más cercanas (y la salida a todas); los demás se
-// estiman con la línea recta y los minutos por kilómetro que Google acaba de dar para esa zona. Luego la
+// estiman con la línea recta y los minutos por kilómetro que ORS acaba de dar para esa zona. Luego la
 // consulta con tráfico de la ruta elegida pone los tiempos de verdad en los tramos que se van a hacer.
 //
 // Los pares se reutilizan en cada «Siguiente» y al añadir una parada solo se piden los suyos. Viven en
-// memoria (app.js): las condiciones de Google no dejan guardarlos en el móvil.
+// memoria (app.js) durante el día.
 
-import { googleMatrix, trafficLegs, haversineKm, trafficFactor, estimate, calibrate, guess, sameSpot, netWarning } from './geo.js';
+import { orsMatrix, trafficLegs, haversineKm, trafficFactor, estimate, calibrate, guess, sameSpot, netWarning } from './geo.js';
 import { optimize, evaluate } from './solver.js';
 import { walkPlan, walkMin } from './parking.js';
 
@@ -26,7 +26,7 @@ const nearest = (p, list, k, skip = -1) => list.map((q, idx) => ({ idx, d: haver
   .filter((x) => x.idx !== skip).sort((a, b) => a.d - b.d).slice(0, k).map((x) => x.idx);
 
 /**
- * Qué pares (índices de nodo: 1..n paradas, n+1 almacén) merece la pena pedir a Google entre las paradas.
+ * Qué pares (índices de nodo: 1..n paradas, n+1 almacén) merece la pena pedir entre las paradas.
  * Todos con todos hasta FULL_UP_TO paradas; con más, cada parada con sus NEIGHBORS más cercanas, en los dos
  * sentidos. Devuelve una lista de [i, j].
  */
@@ -48,11 +48,9 @@ export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToD
 /**
  * from: {lat, lon} punto de salida. stops: [{id, lat, lon, windows:[[a,b]], service}].
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
- * key: clave de Google. Sin ella se estima por distancia. live: tráfico de ahora (si no, el previsto).
- * matrix: pedir también la matriz de tiempos entre paradas (de pago con varios repartidores). Sin ella, los
- * tiempos se estiman con la línea recta y se ajustan con lo que dice la consulta de la ruta con tráfico.
- * trafficRounds: cuántas consultas de ruta con tráfico como mucho (cada una es una consulta de Google). Con 0
- * no se pregunta: se usa `hint`, lo que dijo Google la última vez ({ perKm, pairs }, devuelto como `traffic`).
+ * orsKey: clave de openrouteservice. tomtomKey: clave de TomTom. Sin ellas se estima por distancia. live: tráfico de ahora (si no, el previsto).
+ * trafficRounds: consultas de tráfico como mucho. Con 0 se reutiliza `hint`, lo que dijo TomTom la última vez
+ * ({ perKm, pairs }, devuelto como `traffic`).
  * pairs: tiempos entre paradas ya pedidos ({ "idA@lat,lon>idB@lat,lon": { m, km, at, src } }), en memoria.
  * Son de carretera vacía (sin la hora): el factor de la franja horaria se pone al usarlos.
  * maxAgeMin: antigüedad máxima de esos tiempos para reutilizarlos (las calles no cambian en un día).
@@ -61,7 +59,7 @@ export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToD
  * fixedOrder: ids en el orden que ha puesto el repartidor. Se respeta y solo se calculan las horas; las paradas
  * que no estén (añadidas después) van al final y los ids que ya no existen se ignoran.
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, key, live, matrix: useMatrix = true, trafficRounds = 3, hint = null, pairs = {}, maxAgeMin = 12 * 60, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
+export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, trafficRounds = 3, hint = null, pairs = {}, maxAgeMin = 12 * 60, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
   if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs: {} };
   const n = stops.length;
   const depart = departAt instanceof Date ? departAt : new Date();
@@ -71,13 +69,13 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
   const keys = [fromIsDepot ? nodeKey(depot, 'depot') : null, ...stops.map((s) => nodeKey(s, s.id)), nodeKey(depot, 'depot')];
   const point = (i) => (i === 0 ? from : i === n + 1 ? depot : stops[i - 1]);
   const limit = now - maxAgeMin * 60000;
-  const fresh = (k) => { const p = pairs[k]; return p && p.src === 'google' && p.at >= limit ? p : null; };
+  const fresh = (k) => { const p = pairs[k]; return p && p.src === 'ors' && p.at >= limit ? p : null; };
 
   // Lo que ya se sabe (de antes o de ahora) y lo que hay que pedir.
   const known = new Map(); // "i,j" -> { m, km }
   const next = {}; // pares que se quedan en memoria para el próximo cálculo
   let warning, source = 'estimate';
-  if (key && useMatrix) {
+  if (orsKey) {
     const want = wantedPairs(stops, { returnToDepot });
     // Salida: desde el almacén se piden todas (y se quedan para luego). Desde donde estás (en ruta) no se pide
     // nada: se estima, y la consulta con tráfico de la ruta elegida da luego el tiempo exacto de ese tramo.
@@ -91,25 +89,25 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
     try {
       if (missing.length) {
         const pts = Array.from({ length: n + 2 }, (_, i) => point(i));
-        const got = await googleMatrix(pts, pts, { key, cells: missing });
+        const got = await orsMatrix(pts, pts, { key: orsKey, cells: missing });
         for (const x of got) {
-          const v = { m: x.min, km: x.km, at: now, src: 'google' };
+          const v = { m: x.min, km: x.km, at: now, src: 'ors' };
           known.set(`${x.i},${x.j}`, v);
           if (keys[x.i]) next[pairKey(keys[x.i], keys[x.j])] = v;
         }
       }
-      source = 'google';
+      source = 'ors';
     } catch (e) {
       warning = netWarning(e);
     }
   }
 
-  // Minutos por kilómetro en línea recta según Google, para estimar los pares que no se han pedido.
+  // Minutos por kilómetro en línea recta según ORS, para estimar los pares que no se han pedido.
   const perKm = calibrate([...known.entries()].map(([ij, v]) => {
     const [i, j] = ij.split(',').map(Number);
     return { min: v.m, km: haversineKm(point(i), point(j)) };
   }));
-  // Lo de Google es carretera vacía: la hora de salida pone el factor de tráfico de esa franja.
+  // Lo de ORS es carretera vacía: la hora de salida pone el factor de tráfico de esa franja.
   const f = trafficFactor(depart);
   const minutes = (i, j) => {
     if (i === j) return { m: 0, km: 0 };
@@ -162,12 +160,12 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
   const solve = () => (fixed ? evaluateOrder(fixed, ctx) : optimize(ctx));
   let best = solve();
 
-  // Con Google: se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
+  // Se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
   // y se vuelve a optimizar; si el orden cambia, se comprueba también el nuevo (máximo 3 consultas).
-  // Si la matriz ya ha fallado (sin conexión, clave mala), no se insiste.
-  // Lo que dijo Google la última vez (con tráfico): los tramos que se preguntaron van tal cual y los demás se
+  // Si TomTom no responde, se conserva el mejor plan disponible.
+  // Lo que dijo TomTom la última vez (con tráfico): los tramos que se preguntaron van tal cual y los demás se
   // estiman a la velocidad que había entonces. Así un «Siguiente» no necesita preguntar otra vez.
-  const exact = new Set(); // tramos que ya tienen el tiempo de Google con tráfico
+  const exact = new Set(); // tramos que ya tienen el tiempo de TomTom con tráfico
   const trafficPairs = {};
   let livePerKm = hint?.perKm || null;
   const usable = (i, j) => i !== j && !onFoot(i, j);
@@ -193,7 +191,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
   if (exact.size || (livePerKm && !known.size)) best = solve();
 
   let traffic = false;
-  if (key && !warning) {
+  if (tomtomKey) {
     const seen = new Set();
     for (let round = 0; round < trafficRounds; round++) {
       const order = best.order.join(',');
@@ -201,7 +199,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
       seen.add(order);
       const nodes = [0, ...best.order, ...(returnToDepot ? [n + 1] : [])];
       let legsMin = null;
-      try { legsMin = await trafficLegs(nodes.map(point), { key, departAt: depart, live }); } catch (e) { warning = e.message; break; }
+      try { legsMin = await trafficLegs(nodes.map(point), { key: tomtomKey, departAt: depart, live }); } catch (e) { warning = netWarning(e); break; }
       if (!legsMin) break;
       traffic = true;
       legsMin.forEach((m, k) => {
@@ -211,8 +209,8 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
         if (keys[a]) trafficPairs[pairKey(keys[a], keys[b])] = m;
         if (b === n + 1) back[a] = travel(a, b, m); else matrix[a][b] = travel(a, b, m);
       });
-      // Sin matriz de Google, lo demás era una estimación a ojo: se rehace con los minutos por kilómetro que
-      // acaba de dar Google para esta ruta, con el tráfico de esa hora. Así el siguiente intento compara
+      // Sin matriz de ORS, lo demás era una estimación a ojo: se rehace con los minutos por kilómetro que
+      // acaba de dar TomTom para esta ruta, con el tráfico de esa hora. Así el siguiente intento compara
       // órdenes con tiempos que se parecen a los de verdad.
       if (!known.size) {
         const live = calibrate(legsMin.map((m, k) => ({ min: m, km: haversineKm(point(nodes[k]), point(nodes[k + 1])) })));
@@ -251,7 +249,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
     wait: best.wait,
     km,
     source: traffic || exact.size ? 'traffic' : source,
-    // Lo que ha dicho Google ahora (con tráfico), para no tener que volver a preguntar en un rato (en memoria).
+    // Lo que ha dicho TomTom ahora (con tráfico), para no tener que volver a preguntar en un rato (en memoria).
     traffic: traffic ? { perKm: livePerKm, pairs: trafficPairs } : null,
     warning,
     live: traffic && !!live,
