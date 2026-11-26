@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   testflight:
-    runs-on: macos-15
+    runs-on: macos-26  # Apple exige compilar con Xcode 26 o posterior para subir a TestFlight
     timeout-minutes: 45
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -78,6 +78,7 @@ jobs:
       - name: Compilar
         working-directory: native/ios/App
         run: |
+          xcodebuild -version
           xcodebuild archive \
             -project App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' \
