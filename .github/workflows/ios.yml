@@ -62,7 +62,16 @@ jobs:
       - name: Clave de App Store Connect
         run: |
           mkdir -p "$RUNNER_TEMP/keys"
-          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          f="$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          # Se rehace el archivo con el formato exacto que pide Xcode, aunque el secreto se haya pegado
+          # con saltos de línea de Windows, espacios de más o sin las líneas BEGIN/END.
+          cuerpo=$(printf '%s' "$ASC_KEY_P8" | tr -d '\r' | sed -e 's/-----[A-Z ]*-----//g' | tr -d ' \t\n')
+          { echo '-----BEGIN PRIVATE KEY-----'; printf '%s' "$cuerpo" | fold -w 64; echo; echo '-----END PRIVATE KEY-----'; } > "$f"
+          if ! openssl pkey -in "$f" -noout 2>/dev/null; then
+            echo "::error::El secreto ASC_KEY_P8 no es una clave válida. Ábrelo con el Bloc de notas, copia todo el archivo .p8 (con las líneas BEGIN y END) y vuelve a pegarlo en GitHub."
+            exit 1
+          fi
+          echo "Clave .p8 correcta"
 
       - name: Compilar y firmar
         working-directory: native/ios/App
