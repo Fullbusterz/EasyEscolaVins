@@ -73,23 +73,22 @@ jobs:
           fi
           echo "Clave .p8 correcta"
 
-      - name: Compilar y firmar
+      # Se compila sin firmar: firmar aquí pediría un perfil de desarrollo, y ese exige tener un iPhone
+      # registrado en la cuenta. La firma de App Store se pone al exportar (paso siguiente).
+      - name: Compilar
         working-directory: native/ios/App
         run: |
           xcodebuild archive \
             -project App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Ruta.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
-      - name: Subir a TestFlight
+      - name: Firmar y subir a TestFlight
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
