@@ -7,10 +7,11 @@ El código ya está hecho (PR #9). Esto es lo que solo se puede hacer con las cu
 Sin ella, la app ordena las rutas por distancia aproximada, sin tráfico.
 
 1. Entra en <https://console.cloud.google.com/> con la cuenta de Google de la empresa.
-2. Crea un proyecto «Ruta Escolà» y activa la **facturación** (pide tarjeta; con 1 repartidor sale gratis, ver costes en el LEEME).
+2. Crea un proyecto «Ruta Escolà» y activa la **facturación**. Google pide una tarjeta, pero no cobra: la app está hecha para que toda la empresa quepa en lo gratuito (unos 9 repartidores).
 3. Busca **Routes API** y pulsa *Habilitar*.
 4. *Credenciales* → *Crear credenciales* → *Clave de API*.
-5. **Pásame la clave por el chat** y yo la pongo en la app, con sus restricciones explicadas (que solo funcione desde vuestra web y con un tope diario de gasto).
+5. Pon el **tope de 160 rutas al día** (te digo dónde). Con eso es imposible que cobre nada.
+6. **Pásame la clave por el chat** y yo la pongo en la app. Los repartidores no tienen que hacer nada.
 
 ## 2. Revisar y publicar (10 minutos)
 

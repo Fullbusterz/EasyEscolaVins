@@ -49,6 +49,9 @@ export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToD
  * from: {lat, lon} punto de salida. stops: [{id, lat, lon, windows:[[a,b]], service}].
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
  * key: clave de Google. Sin ella se estima por distancia. live: tráfico de ahora (si no, el previsto).
+ * matrix: pedir también la matriz de tiempos entre paradas (de pago con varios repartidores). Sin ella, los
+ * tiempos se estiman con la línea recta y se ajustan con lo que dice la consulta de la ruta con tráfico.
+ * trafficRounds: cuántas consultas de ruta con tráfico como mucho (cada una es una consulta de Google).
  * pairs: tiempos entre paradas ya pedidos ({ "idA@lat,lon>idB@lat,lon": { m, km, at, src } }), en memoria.
  * Son de carretera vacía (sin la hora): el factor de la franja horaria se pone al usarlos.
  * maxAgeMin: antigüedad máxima de esos tiempos para reutilizarlos (las calles no cambian en un día).
@@ -57,7 +60,7 @@ export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToD
  * fixedOrder: ids en el orden que ha puesto el repartidor. Se respeta y solo se calculan las horas; las paradas
  * que no estén (añadidas después) van al final y los ids que ya no existen se ignoran.
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, key, live, pairs = {}, maxAgeMin = 12 * 60, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
+export async function computePlan({ from, stops, depot, startMin, departAt, key, live, matrix: useMatrix = true, trafficRounds = 3, pairs = {}, maxAgeMin = 12 * 60, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
   if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs: {} };
   const n = stops.length;
   const depart = departAt instanceof Date ? departAt : new Date();
@@ -73,7 +76,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
   const known = new Map(); // "i,j" -> { m, km }
   const next = {}; // pares que se quedan en memoria para el próximo cálculo
   let warning, source = 'estimate';
-  if (key) {
+  if (key && useMatrix) {
     const want = wantedPairs(stops, { returnToDepot });
     // Salida: desde el almacén se piden todas (y se quedan para luego). Desde donde estás (en ruta) no se pide
     // nada: se estima, y la consulta con tráfico de la ruta elegida da luego el tiempo exacto de ese tramo.
@@ -164,7 +167,8 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
   let traffic = false;
   if (key && !warning) {
     const seen = new Set();
-    for (let round = 0; round < 3; round++) {
+    const exact = new Set(); // tramos que ya tienen el tiempo de Google con tráfico
+    for (let round = 0; round < trafficRounds; round++) {
       const order = best.order.join(',');
       if (seen.has(order)) break;
       seen.add(order);
@@ -176,8 +180,24 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
       legsMin.forEach((m, k) => {
         const a = nodes[k], b = nodes[k + 1];
         if (onFoot(a, b)) return; // ese tramo se hace andando: el tráfico no cuenta
+        exact.add(`${a},${b}`);
         if (b === n + 1) back[a] = travel(a, b, m); else matrix[a][b] = travel(a, b, m);
       });
+      // Sin matriz de Google, lo demás era una estimación a ojo: se rehace con los minutos por kilómetro que
+      // acaba de dar Google para esta ruta, con el tráfico de esa hora. Así el siguiente intento compara
+      // órdenes con tiempos que se parecen a los de verdad.
+      if (!known.size) {
+        const live = calibrate(legsMin.map((m, k) => ({ min: m, km: haversineKm(point(nodes[k]), point(nodes[k + 1])) })));
+        if (live) {
+          for (let i = 0; i <= n; i++) {
+            for (let j = 1; j <= n + 1; j++) {
+              if (i === j || exact.has(`${i},${j}`) || onFoot(i, j)) continue;
+              const t = travel(i, j, guess(point(i), point(j), live));
+              if (j === n + 1) back[i] = t; else matrix[i][j] = t;
+            }
+          }
+        }
+      }
       const again = solve();
       best = again.order.join(',') === order ? evaluateOrder(best.order, ctx) : again;
     }

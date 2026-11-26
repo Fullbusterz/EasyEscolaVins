@@ -39,14 +39,16 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 - **Locales por su nombre:** OpenStreetMap (Nominatim), como mucho una petición por segundo.
 - **Mapa:** cartografía del ICGC (CC BY 4.0, con datos de OpenStreetMap fuera de Cataluña), dibujada con Leaflet (incluido en `vendor/`).
 
-### Cómo usa la app Google
+### Cómo usa la app Google (sin pagar)
 
-Se piden dos cosas, de precio muy distinto, y cada una para lo suyo:
+Para que toda la empresa quepa en lo que Google regala cada mes, la app solo hace una consulta: **la ruta elegida, con tráfico** (*Compute Routes*), con todas las paradas en orden.
 
-1. **Tiempos entre paradas, sin tráfico** (*Compute Route Matrix*, la tarifa más barata). No se piden todos con todos, que con 25 paradas son 676 tiempos: cada parada con sus 5 vecinas más cercanas y el almacén con todas, unos 150. Los que no se piden se estiman con la línea recta y los minutos por kilómetro que Google acaba de dar para esa zona. A esos tiempos se les pone un factor según la hora (la hora punta va más lenta).
-2. **La ruta elegida, con tráfico** (*Compute Routes*): una consulta con todas las paradas en orden. Con el tráfico previsto si se planifica para otra hora, y con el de ahora mismo al salir y en cada «Siguiente». Corrige los tramos con atasco y se vuelve a optimizar, con un máximo de 3 consultas.
+- **Al planificar:** primero se ordena por distancia y luego se pregunta a Google por esa ruta con el tráfico previsto. Con lo que contesta se corrigen los tramos con atasco y se ajustan los demás tiempos a la velocidad real de ese día. Se vuelve a ordenar y, si el orden cambia, se pregunta otra vez. Como mucho son 2 consultas.
+- **En cada «Siguiente»:** 1 consulta, con el tráfico de ahora.
 
-Los tiempos de Google **no se guardan en el móvil** porque sus condiciones no lo permiten. Se quedan en memoria mientras la app está abierta y se reutilizan en cada «Siguiente»: al añadir una parada solo se piden los suyos. En Ajustes → Más ajustes se ve cuánto ha consultado este mes ese móvil.
+Hay un modo más fino que además pide la tabla de tiempos entre paradas (`GOOGLE_MATRIX` en `js/config.js`). Está **apagado**, porque con varios repartidores se pasa de lo gratuito.
+
+Los tiempos de Google **no se guardan en el móvil**: sus condiciones no lo permiten. En Ajustes → Más ajustes se ve cuánto ha consultado ese móvil este mes.
 
 ### Poner la clave de Google (el encargado, una vez para todos)
 
@@ -58,31 +60,19 @@ Los repartidores no tienen que hacer nada: la clave de la empresa va en `js/conf
    - *Restricciones de aplicaciones*: **Sitios web**, con la dirección de la web acabada en `/*` (por ejemplo `https://fullbusterz.github.io/*`).
    - *Restricciones de API*: solo **Routes API**.
 4. Para la app de iPhone, crea **otra clave** igual pero con *Restricciones de aplicaciones*: **Apps de iOS**, identificador `com.flixescola.ruta`. Una clave no puede estar restringida a la vez a webs y a apps.
-5. *APIs y servicios* → *Routes API* → *Cuotas*: pon un **tope diario**. Por ejemplo, 3.000 elementos de matriz al día y 1.500 rutas al día. Si un día se llega al tope, la app sigue con rutas aproximadas y lo avisa. Así nunca puede costar más de lo previsto.
+5. *APIs y servicios* → *Routes API* → *Cuotas*: pon el **tope de 160 rutas al día** («Compute Routes» por día) y **0** a la matriz («Compute Route Matrix»). Así nunca se pasa de lo gratuito.
 6. Pon la clave de la web en `GOOGLE_MAPS_KEY` y la del iPhone en `GOOGLE_MAPS_KEY_IOS`, en `js/config.js`. Sube `VERSION` y publica.
 7. En un móvil: Ajustes → Más ajustes → **Probar Google** debe decir «Funciona ✓» con los minutos del almacén a Sants.
 
 La clave de la web se ve en el código de la página, como la de cualquier mapa de Google en una web. Por eso tiene que estar restringida a la web, a Routes API y con tope. Si un repartidor tiene que usar otra clave, la pone en su móvil, en Ajustes → Más ajustes. Esa no viaja con «Pasar configuración» ni con las copias.
 
-### Cuánto cuesta
+### Cuánto cuesta: nada, si se pone el tope
 
-Precios de Google de 2025, en dólares. Pueden cambiar, así que míralos en <https://developers.google.com/maps/billing-and-pricing/pricing> antes de decidir. Cada mes Google regala un número de consultas de cada tipo para toda la cuenta:
+Google regala cada mes **5.000 rutas con tráfico** para toda la cuenta de la empresa, no por repartidor. Es el dato de 2025; compruébalo en <https://developers.google.com/maps/billing-and-pricing/pricing>. Pide una tarjeta para dar de alta la cuenta, pero no cobra mientras no se pase de ahí.
 
-| Lo que pide la app | Tarifa de Google | Gratis al mes | Después |
-|---|---|---|---|
-| Tiempos entre paradas (sin tráfico) | Compute Route Matrix *Essentials* | 10.000 elementos | ~5 $ cada 1.000 |
-| Ruta con tráfico | Compute Routes *Pro* | 5.000 rutas | ~10 $ cada 1.000 |
+Un repartidor con 20 paradas gasta unas **24 rutas al día**: 2 al planificar, 2 si recalcula y 1 por parada. Son unas 530 al mes, así que **caben unos 9 repartidores gratis**.
 
-Un repartidor con 20 paradas gasta más o menos **450 elementos y 35 rutas al día**: unos 10.000 elementos y 800 rutas al mes. Para toda la empresa, contando 22 días al mes:
-
-| Repartidores | Al mes (aprox.) |
-|---|---|
-| 1 | gratis |
-| 3 | ~100 $ |
-| 5 | ~200 $ |
-| 10 | ~500 $ |
-
-Lo que más gasta es volver a pedir los tiempos cuando el móvil cierra la app (sobre todo la web en iPhone; la app de iPhone se cierra mucho menos). El tope diario del paso 5 es la garantía de que no se pasa.
+Para que **nunca** se pueda cobrar nada, en la consola de Google se pone un **tope de 160 rutas al día** (5.000 entre 31 días). Si un día se llega al tope, la app sigue funcionando con distancias aproximadas hasta el día siguiente y lo avisa.
 
 ## Instalar en el móvil
 

@@ -1,6 +1,6 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, trafficLegs, haversineKm, onGoogleUsage } from './geo.js';
-import { GOOGLE_MAPS_KEY, GOOGLE_MAPS_KEY_IOS } from './config.js';
+import { GOOGLE_MAPS_KEY, GOOGLE_MAPS_KEY_IOS, GOOGLE_MATRIX } from './config.js';
 import { isNative, plugin, tap, shareFileNative, setupNativeShell } from './native.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin, TROLLEY_BOXES, LOOSE_PER_BOX } from './parking.js';
@@ -531,6 +531,7 @@ function renderPlanning(r) {
 function sourceText(p) {
   if (p.source === 'traffic' || p.source === 'tomtom') return `Con el tráfico de Google ${p.live ? 'de ese momento' : 'previsto para esa hora'}`;
   if (p.source === 'google' || p.source === 'ors') return 'Con tiempos de Google y tráfico estimado por hora';
+  if (p.source === 'estimate' && googleKey() && !p.warning) return 'Con distancias aproximadas';
   return googleKey() ? 'Con distancias aproximadas: Google no ha respondido' : 'Con distancias aproximadas: falta la clave de Google';
 }
 
@@ -1494,7 +1495,8 @@ async function optimize({ recalc = false } = {}) {
   ui.busy = live && googleKey() ? 'Mirando el tráfico…' : 'Calculando la ruta…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: googleKey(), live, pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
+    // Para que toda la empresa quepa en lo gratuito de Google: como mucho 2 consultas al planificar.
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: googleKey(), live, matrix: GOOGLE_MATRIX, trafficRounds: GOOGLE_MATRIX ? 3 : 2, pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
     keepPairs(ui.date, plan.pairs); delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
@@ -1552,7 +1554,8 @@ async function replanActive(msg) {
   const parkedAt = g >= 0 && parking[g].ids.some((id) => active.some((a) => a.id === id)) ? g : null;
   try {
     const plan = await computePlan({
-      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: googleKey(), live: true,
+      // En ruta, una sola consulta por «Siguiente».
+      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: googleKey(), live: true, matrix: GOOGLE_MATRIX, trafficRounds: GOOGLE_MATRIX ? 3 : 1,
       stops: active.map(planStop), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking, parkedAt, fixedOrder: r.manual || null,
     });
     keepPairs(ui.date, plan.pairs); delete plan.pairs;

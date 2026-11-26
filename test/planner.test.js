@@ -218,3 +218,26 @@ test('la ventana se recorta por la descarga: hay que acabar antes de que cierren
   // optimizador la ordene con criterio (el aviso de que va justo es cosa de la pantalla, no del solver).
   assert.deepEqual(fitService([[480, 500]], 40), [[480, 490]]);
 });
+
+test('sin matriz (lo gratuito): ni un solo tiempo de matriz, una o dos rutas, y el resto ajustado con Google', async () => {
+  reset();
+  const many = Array.from({ length: 20 }, (_, i) => ({ id: `s${i}`, lat: 41.35 + (i % 5) * 0.01, lon: 2.05 + Math.floor(i / 5) * 0.01, windows: [], service: 5 }));
+  const p = await computePlan({ ...base, stops: many, matrix: false, trafficRounds: 2 });
+  assert.equal(elements, 0, 'no se gasta nada de matriz');
+  assert.ok(routeCalls.length >= 1 && routeCalls.length <= 2, `${routeCalls.length} consultas`);
+  assert.equal(p.source, 'traffic');
+  assert.equal(p.order.length, 20);
+  assert.deepEqual(p.pairs, {});
+  // En ruta: una sola consulta por «Siguiente».
+  reset();
+  await computePlan({ ...base, from: { lat: 41.36, lon: 2.06 }, stops: many.slice(5), matrix: false, trafficRounds: 1, live: true });
+  assert.equal(routeCalls.length, 1);
+});
+
+test('sin matriz, un atasco sigue cambiando el orden', async () => {
+  reset();
+  jam = (from, to) => (near(from, depot) && near(to, stops[0]) ? 60 : 5);
+  const p = await computePlan({ ...base, stops, matrix: false, trafficRounds: 2, live: true });
+  jam = null;
+  assert.deepEqual(p.order, ['b', 'a']);
+});
