@@ -28,7 +28,7 @@ Hace falta una cuenta de **Apple Developer** (99 € al año). No hace falta Mac
    | `ASC_KEY_P8` | Todo el contenido del archivo `.p8`, de `-----BEGIN PRIVATE KEY-----` a `-----END PRIVATE KEY-----` |
    | `APPLE_TEAM_ID` | El Team ID (paso 5) |
 
-7. **La clave de Google para la app.** Ver «Google Maps» en el [LEEME principal](../LEEME.md): la app de iPhone necesita una clave restringida a *Apps de iOS* con el identificador `com.flixescola.ruta`. Va en `GOOGLE_MAPS_KEY_IOS` de `js/config.js`.
+7. **La clave de Google para la app.** Es una clave restringida a *Apps de iOS* con el identificador `com.flixescola.ruta`. Va como quinto secreto, `GOOGLE_MAPS_KEY_IOS`, no en el código. Ver «Google Maps» en el [LEEME principal](../LEEME.md).
 8. **Compilar.** En GitHub → *Actions* → **App de iPhone (TestFlight)** → *Run workflow*. Tarda unos 15-20 minutos. Al acabar, la compilación aparece en App Store Connect → *TestFlight* (Apple la procesa unos minutos más).
 
 ## Dar la app a los repartidores (TestFlight)

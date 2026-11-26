@@ -21,6 +21,8 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # La clave de Google de la app de iPhone (restringida a com.flixescola.ruta): un secreto, nunca en el código.
+      GOOGLE_MAPS_KEY_IOS: ${{ secrets.GOOGLE_MAPS_KEY_IOS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +49,7 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+          node ../tools/put-keys.mjs www
           npx cap sync ios
 
       - name: Versión

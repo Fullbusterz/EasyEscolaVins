@@ -1,8 +1,12 @@
 // Configuración de la empresa: lo que vale igual para todos los repartidores y no tiene que tocar nadie.
 //
 // GOOGLE_MAPS_KEY: la clave de Google Maps Platform de Escolà para los tiempos de conducción y el tráfico
-// (Routes API). Se pone aquí UNA vez y la tienen todos los móviles al actualizar la app: los repartidores no
-// tienen que crear cuentas ni pegar claves. Cómo sacarla y protegerla: LEEME.md, «Google Maps».
+// (Routes API). La tienen todos los móviles al actualizar la app: los repartidores no crean cuentas ni pegan
+// claves. Cómo sacarla y protegerla: LEEME.md, «Google Maps».
+//
+// AQUÍ SE QUEDA VACÍA. El repositorio es público y hay robots que buscan claves en GitHub: la clave va en los
+// secretos del repositorio (GOOGLE_MAPS_KEY y GOOGLE_MAPS_KEY_IOS) y la meten los workflows al publicar
+// (.github/workflows/web.yml y ios.yml, con tools/put-keys.mjs).
 //
 // Va a la vista de cualquiera que abra la web (es una clave de navegador, como las de cualquier mapa de
 // Google en una página), así que en la consola de Google tiene que estar:

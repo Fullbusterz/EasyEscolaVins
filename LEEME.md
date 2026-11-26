@@ -54,19 +54,23 @@ Los tiempos de Google **no se guardan en el móvil**: sus condiciones no lo perm
 
 ### Poner la clave de Google (el encargado, una vez para todos)
 
-Los repartidores no tienen que hacer nada: la clave de la empresa va en `js/config.js` y todos los móviles la tienen al actualizar la app.
+Los repartidores no tienen que hacer nada: la clave de la empresa va dentro de la app.
 
-1. En <https://console.cloud.google.com/> crea un proyecto («Ruta Escolà») y activa la **facturación** con la tarjeta de la empresa.
-2. *APIs y servicios* → *Biblioteca* → **Routes API** → *Habilitar*.
-3. *APIs y servicios* → *Credenciales* → *Crear credenciales* → *Clave de API*. En la clave:
-   - *Restricciones de aplicaciones*: **Sitios web**, con la dirección de la web acabada en `/*` (por ejemplo `https://fullbusterz.github.io/*`).
-   - *Restricciones de API*: solo **Routes API**.
-4. Para la app de iPhone, crea **otra clave** igual pero con *Restricciones de aplicaciones*: **Apps de iOS**, identificador `com.flixescola.ruta`. Una clave no puede estar restringida a la vez a webs y a apps.
-5. *APIs y servicios* → *Routes API* → *Cuotas*: pon el **tope de 160 rutas al día** («Compute Routes» por día) y **0** a la matriz («Compute Route Matrix»). Así nunca se pasa de lo gratuito.
-6. Pon la clave de la web en `GOOGLE_MAPS_KEY` y la del iPhone en `GOOGLE_MAPS_KEY_IOS`, en `js/config.js`. Sube `VERSION` y publica.
-7. En un móvil: Ajustes → Más ajustes → **Probar Google** debe decir «Funciona ✓» con los minutos del almacén a Sants.
+**La clave no está en el código.** El repositorio es público y hay robots que buscan claves de Google en GitHub. Por eso `js/config.js` la tiene vacía y la clave vive en los **secretos del repositorio**. Al publicar, los workflows la meten en la copia que se publica (`tools/put-keys.mjs`):
 
-La clave de la web se ve en el código de la página, como la de cualquier mapa de Google en una web. Por eso tiene que estar restringida a la web, a Routes API y con tope. Si un repartidor tiene que usar otra clave, la pone en su móvil, en Ajustes → Más ajustes. Esa no viaja con «Pasar configuración» ni con las copias.
+- `GOOGLE_MAPS_KEY`: la web. La publica `.github/workflows/web.yml` en GitHub Pages (Pages → *Source: GitHub Actions* y la variable `PUBLICAR_CON_ACTIONS = si`).
+- `GOOGLE_MAPS_KEY_IOS`: la app de iPhone. La mete `.github/workflows/ios.yml` al compilar.
+
+Además, cada clave va protegida en la consola de Google:
+
+1. Restringida a quien la usa. La de la web, a *Sitios web* con la dirección de la web (`https://…/*`). La del iPhone, a *Apps de iOS* con `com.flixescola.ruta`. Una clave no puede estar restringida a las dos cosas a la vez.
+2. Restringida a una sola API: **Routes API**.
+3. Con **tope diario** en *Cuotas*: 160 rutas al día, y 0 a la matriz.
+4. Con un **presupuesto de 1 €** con aviso por correo, en *Facturación*.
+
+Quien abra la web publicada todavía puede ver la clave (pasa con cualquier web que use Google Maps). Con las restricciones y el tope, lo peor que puede hacer es gastar el tope de un día: no puede costar dinero.
+
+Los pasos uno por uno están en `PASOS-EN-EL-PC.md`. Si un repartidor necesitara otra clave, se pone en su móvil en Ajustes → Más ajustes. Esa no viaja con «Pasar configuración» ni con las copias.
 
 ### Cuánto cuesta: nada, si se pone el tope
 
