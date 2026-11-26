@@ -42,7 +42,7 @@ jobs:
           ORS_KEY: ${{ secrets.ORS_KEY }}
         run: |
           mkdir _site
-          cp -r index.html manifest.webmanifest sw.js .nojekyll .well-known css js data icons vendor _site/
+          cp -r index.html privacidad.html manifest.webmanifest sw.js .nojekyll .well-known css js data icons vendor _site/
           node tools/put-keys.mjs _site
 
       - uses: actions/upload-pages-artifact@v3
