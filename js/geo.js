@@ -1,9 +1,9 @@
 // Direcciones y tiempos de viaje, solo con servicios que permiten este uso (de empresa) y guardar resultados:
 // - Direcciones: ICGC (Institut Cartogràfic i Geològic de Catalunya) y, si no, CartoCiudad (IGN). Ambos CC BY 4.0.
 //   Para buscar un local por su nombre: OpenStreetMap (Nominatim), con calma (1 petición/s).
-// - Tiempos entre paradas: openrouteservice (clave gratuita), con un factor de tráfico por franja horaria.
-// - Tráfico real (opcional, clave de TomTom): una sola consulta por ruta corrige los tramos elegidos.
-//   Esos tiempos no se guardan: las condiciones de TomTom no permiten almacenarlos.
+// - Tiempos entre paradas: openrouteservice (HeiGIT). Tráfico de la ruta: TomTom.
+
+import { nativePosition } from './native.js';
 
 // Almacén (Sant Joan Despí): sin población escrita, el buscador prefiere lo que queda cerca.
 const BCN = { lat: 41.372, lon: 2.077 };
@@ -32,7 +32,7 @@ export function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
-// Coordenadas pegadas a mano o dentro de un enlace de Google Maps.
+// Coordenadas pegadas a mano o dentro de un enlace de mapas.
 export function coordsFromText(text) {
   const s = String(text || '');
   const m = s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) ||
@@ -257,7 +257,7 @@ export async function geocode(query, { kind = 'address' } = {}) {
 
 // ---------- Tiempos de viaje ----------
 
-// openrouteservice da tiempos de carretera vacía. Corrección orientativa para el área de Barcelona.
+// ORS da tiempos de carretera vacía. Corrección orientativa para el área de Barcelona.
 export function trafficFactor(date) {
   const h = date.getHours() + date.getMinutes() / 60;
   const weekend = date.getDay() === 0 || date.getDay() === 6;
@@ -274,17 +274,124 @@ export function estimate(a, b) {
   return (haversineKm(a, b) * 1.4 / 25) * 60 + 3;
 }
 
-// Devuelve { minutes[o][d], km[o][d], source }.
+const ORS_MAX_CELLS = 3500;
+const TOMTOM_MAX_POINTS = 150;
+
+// Consultas hechas por este móvil, para enseñarlas en Ajustes.
+let usageHook = () => {};
+export function onRouteUsage(fn) { usageHook = typeof fn === 'function' ? fn : () => {}; }
+
+const pointKey = (p) => `${Number(p.lon).toFixed(6)},${Number(p.lat).toFixed(6)}`;
+
+async function orsRequest(origins, destinations, key) {
+  const points = [], indexes = new Map();
+  const index = (p) => {
+    const k = pointKey(p);
+    if (!indexes.has(k)) { indexes.set(k, points.length); points.push([+Number(p.lon).toFixed(6), +Number(p.lat).toFixed(6)]); }
+    return indexes.get(k);
+  };
+  const sources = origins.map(index), dests = destinations.map(index);
+  const res = await get('https://api.heigit.org/openrouteservice/v2/matrix/driving-car', {
+    method: 'POST', headers: { Authorization: key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ locations: points, sources, destinations: dests, metrics: ['duration', 'distance'], units: 'km' }),
+  }, 20000);
+  if (res.status === 401 || res.status === 403) throw new Error('La clave de openrouteservice no es válida o se ha gastado la cuota de hoy');
+  if (res.status === 429) throw new Error('Demasiadas consultas seguidas a openrouteservice: espera un minuto');
+  if (!res.ok) throw new Error(`openrouteservice ${res.status}`);
+  usageHook({ matrix: 1 });
+  return res.json();
+}
+
+async function orsChunk(origins, destinations, requested, key) {
+  const data = await orsRequest(origins, destinations, key);
+  const out = [];
+  const originIndex = new Map(origins.map((_, i) => [i, i]));
+  const destIndex = new Map(destinations.map((_, j) => [j, j]));
+  for (const [i, j] of requested) {
+    const oi = originIndex.get(i), dj = destIndex.get(j);
+    const seconds = data.durations?.[oi]?.[dj], km = data.distances?.[oi]?.[dj];
+    if (seconds == null) continue;
+    out.push({ i, j, min: seconds / 60, km: km ?? haversineKm(origins[oi], destinations[dj]) });
+  }
+  return out;
+}
+
+function splitOrs(origins, destinations, cells) {
+  if (origins.length * destinations.length <= ORS_MAX_CELLS) return [[origins, destinations, cells]];
+  if (origins.length > 1) {
+    const mid = Math.ceil(origins.length / 2), left = new Set(origins.slice(0, mid));
+    return [
+      ...splitOrs(origins.slice(0, mid), destinations, cells.filter(([i]) => left.has(i))),
+      ...splitOrs(origins.slice(mid), destinations, cells.filter(([i]) => !left.has(i))),
+    ];
+  }
+  const mid = ORS_MAX_CELLS;
+  const out = [];
+  for (let k = 0; k < destinations.length; k += mid) {
+    const ds = destinations.slice(k, k + mid), set = new Set(ds);
+    out.push([origins, ds, cells.filter(([, j]) => set.has(j))]);
+  }
+  return out;
+}
+
+/**
+ * Minutos por kilómetro en línea recta según lo que el servicio acaba de decir: con eso se estiman los pares que no
+ * se han pedido. Mediana, para que un par raro (un puente, una salida de ronda) no lo tuerza.
+ */
+export function calibrate(samples) {
+  const r = samples.filter((x) => x.km > 0.3 && x.min > 0).map((x) => x.min / x.km).sort((a, b) => a - b);
+  if (r.length < 3) return null;
+  return Math.min(8, Math.max(1.2, r[Math.floor(r.length / 2)]));
+}
+
+/** Estimación de un par sin consulta: la línea recta a los minutos/km de esa ruta, o la prudente de siempre. */
+export function guess(a, b, perKm) {
+  if (sameSpot(a, b)) return 0;
+  return perKm ? Math.max(1.5, haversineKm(a, b) * perKm) : estimate(a, b);
+}
+
+/**
+ * Tiempos sin tráfico de ORS para los pares pedidos. `cells` es la lista de pares [i, j] (índices de
+ * `origins` y `destinations`); sin ella se piden todos.
+ * Devuelve [{ i, j, min, km }] con los minutos de carretera vacía (sin el factor de la hora: así valen todo
+ * el día y el factor se pone al usarlos).
+ */
+export async function orsMatrix(origins, destinations, { key, cells = null } = {}) {
+  if (!key) throw new Error('Falta la clave de openrouteservice');
+  const wanted = cells || origins.flatMap((_, i) => destinations.map((__, j) => [i, j]));
+  const filtered = wanted.filter(([i, j]) => origins[i] && destinations[j] && !sameSpot(origins[i], destinations[j]));
+  if (!filtered.length) return [];
+  const os = [...new Set(filtered.map(([i]) => i))], ds = [...new Set(filtered.map(([, j]) => j))];
+  const chunks = splitOrs(os, ds, filtered);
+  const out = [];
+  for (const [oi, dj, chunkCells] of chunks) {
+    const got = await orsChunk(oi.map((i) => origins[i]), dj.map((j) => destinations[j]), chunkCells.map(([i, j]) => [oi.indexOf(i), dj.indexOf(j)]), key);
+    for (const x of got) {
+      const i = oi[x.i], j = dj[x.j];
+      out.push({ i, j, min: x.min, km: x.km });
+    }
+  }
+  return out;
+}
+
+// Devuelve { minutes[o][d], km[o][d], source }: todos con todos. Sin clave, estimación.
 export async function travelMatrix(origins, destinations, { orsKey, departAt } = {}) {
   const depart = departAt instanceof Date ? departAt : new Date();
   if (orsKey) {
-    // Si el servicio de rutas falla (clave, cuota o cobertura), mejor una ruta aproximada que ninguna.
-    try { return await orsMatrix(origins, destinations, orsKey, depart); } catch (e) {
-      return { ...estimateMatrix(origins, destinations, depart), warning: e.name === 'TimeoutError' || e.name === 'TypeError' ? 'Sin conexión con el servicio de rutas' : e.message };
+    try {
+      const got = await orsMatrix(origins, destinations, { key: orsKey });
+      const mx = estimateMatrix(origins, destinations, depart);
+      const f = trafficFactor(depart);
+      for (const x of got) { mx.minutes[x.i][x.j] = x.min * f; mx.km[x.i][x.j] = x.km; }
+      return { ...mx, source: 'ors' };
+    } catch (e) {
+      return { ...estimateMatrix(origins, destinations, depart), warning: netWarning(e) };
     }
   }
   return estimateMatrix(origins, destinations, depart);
 }
+
+export const netWarning = (e) => (e?.name === 'TimeoutError' || e?.name === 'TypeError' ? 'Sin conexión con el servicio de rutas' : e?.message || 'El servicio de rutas no ha respondido');
 
 function estimateMatrix(origins, destinations, depart) {
   return {
@@ -294,58 +401,45 @@ function estimateMatrix(origins, destinations, depart) {
   };
 }
 
-async function orsMatrix(origins, destinations, key, depart) {
-  // Cada punto se manda una sola vez aunque sea origen y destino.
-  const pts = [], index = new Map();
-  const idx = (p) => {
-    const k = `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`;
-    if (!index.has(k)) { index.set(k, pts.length); pts.push([+p.lon.toFixed(6), +p.lat.toFixed(6)]); }
-    return index.get(k);
-  };
-  const sources = origins.map(idx), dests = destinations.map(idx);
-  const res = await get('https://api.heigit.org/openrouteservice/v2/matrix/driving-car', {
-    method: 'POST',
-    headers: { Authorization: key, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ locations: pts, sources, destinations: dests, metrics: ['duration', 'distance'], units: 'km' }),
-  });
-  if (res.status === 401 || res.status === 403) throw new Error('La clave de openrouteservice no es válida o se ha gastado la cuota de hoy');
-  if (res.status === 429) throw new Error('Demasiadas consultas seguidas a openrouteservice: espera un minuto');
-  if (!res.ok) throw new Error(`openrouteservice ${res.status}`);
-  const data = await res.json();
-  const f = trafficFactor(depart);
-  return {
-    minutes: data.durations.map((row, i) => row.map((s, j) => (s == null ? estimate(origins[i], destinations[j]) * f : (s / 60) * f))),
-    km: data.distances.map((row, i) => row.map((d, j) => (d == null ? haversineKm(origins[i], destinations[j]) * 1.4 : d))),
-    source: 'ors',
-  };
+export function sameSpot(a, b) {
+  return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5;
 }
 
-function sameSpot(a, b) {
-  return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5;
+/**
+ * Tiempos con tráfico de TomTom para una ruta ya ordenada: points = [salida, parada1, ..., (almacén)].
+ * Una consulta por hasta 150 puntos. Devuelve los minutos de cada tramo, o null si no se pudo.
+ * live: tráfico de ahora (al salir y en ruta); si no, el previsto para departAt.
+ * Una clave mala o sin permiso lanza el error (hay que decírselo a alguien); lo demás devuelve null.
+ */
+export async function trafficLegs(points, { key, departAt, live }) {
+  if (!key || points.length < 2) return null;
+  const step = TOMTOM_MAX_POINTS - 1;
+  const chunks = [];
+  for (let k = 0; k < points.length - 1; k += step) chunks.push(points.slice(k, k + step + 1));
+  const when = live || !(departAt instanceof Date && departAt.getTime() > Date.now() + 60000) ? 'now' : localIso(departAt);
+  const legs = [];
+  for (const pts of chunks) {
+    const path = pts.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(':');
+    const url = `https://api.tomtom.com/routing/1/calculateRoute/${path}/json?key=${encodeURIComponent(key)}&traffic=true&departAt=${encodeURIComponent(when)}&routeType=fastest&travelMode=car&routeRepresentation=summaryOnly`;
+    const res = await get(url, {}, 15000);
+    if (res.status === 401 || res.status === 403) throw new Error('La clave de TomTom no es válida o se ha gastado la cuota del mes');
+    if (!res.ok) return null;
+    const data = await res.json();
+    usageHook({ routes: 1 });
+    const ls = data?.routes?.[0]?.legs;
+    if (!Array.isArray(ls) || ls.length !== pts.length - 1) return null;
+    for (const l of ls) {
+      const seconds = l.summary?.travelTimeInSeconds;
+      if (seconds == null) return null;
+      legs.push(seconds / 60);
+    }
+  }
+  return legs.length === points.length - 1 ? legs : null;
 }
 
 function localIso(d) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
-}
-
-/**
- * Tiempos con tráfico de TomTom para una ruta ya ordenada: points = [salida, parada1, ..., (almacén)].
- * Una sola consulta (hasta 150 puntos). Devuelve los minutos de cada tramo, o null si no se pudo.
- * live: tráfico de ahora (al salir y en ruta); si no, el previsto para departAt.
- */
-export async function trafficLegs(points, { key, departAt, live }) {
-  if (!key || points.length < 2) return null;
-  const path = points.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(':');
-  const when = live || !(departAt > new Date()) ? 'now' : localIso(departAt);
-  const res = await get(`https://api.tomtom.com/routing/1/calculateRoute/${path}/json?key=${encodeURIComponent(key)}` +
-    `&traffic=true&departAt=${encodeURIComponent(when)}&routeType=fastest&travelMode=car&routeRepresentation=summaryOnly`, {}, 15000);
-  if (res.status === 401 || res.status === 403) throw new Error('La clave de TomTom no es válida');
-  if (!res.ok) return null;
-  const data = await res.json();
-  const legs = data.routes?.[0]?.legs;
-  if (!legs || legs.length !== points.length - 1) return null;
-  return legs.map((l) => l.summary.travelTimeInSeconds / 60);
 }
 
 // ---------- Navegación ----------
@@ -356,7 +450,9 @@ export function navUrl(app, p) {
   return `https://waze.com/ul?ll=${p.lat},${p.lon}&navigate=yes`;
 }
 
-export function currentPosition(timeout = 8000) {
+export async function currentPosition(timeout = 8000) {
+  const native = await nativePosition(timeout);
+  if (native !== undefined) return native;
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(

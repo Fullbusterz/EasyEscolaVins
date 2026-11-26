@@ -1,0 +1,33 @@
+# Comprueba que las claves de rutas de la empresa (secretos TOMTOM_KEY y ORS_KEY) funcionan:
+# una consulta a cada servicio y una ruta de prueba con direcciones reales. No publica nada y no escribe las claves.
+# Se lanza a mano desde Actions → «Probar las claves de rutas» → Run workflow.
+name: Probar las claves de rutas
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/probar-claves.mjs
+      - .github/workflows/probar-claves.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probar:
+    runs-on: ubuntu-latest
+    env:
+      TOMTOM_KEY: ${{ secrets.TOMTOM_KEY }}
+      ORS_KEY: ${{ secrets.ORS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Una consulta a cada servicio
+        run: node tools/probar-claves.mjs
+
+      - name: Ruta de prueba con direcciones reales
+        run: node test/real-route.mjs

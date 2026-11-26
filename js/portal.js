@@ -310,6 +310,37 @@ function bridge(app, n) {
   }).catch((err) => say('No he podido leer la ruta (' + q(err.message) + '). ¿Has iniciado sesión?'));
 }
 
+// ---------- La app de iPhone ----------
+
+// Lo mismo que el marcador, para la app de iPhone: corre dentro del portal (ver native/portal-plugin), con la
+// sesión del repartidor, y devuelve las rutas pendientes en un texto JSON. No puede usar nada de fuera de la
+// función. → { routes: [{ fecha, paradas, text }] } o { error }.
+async function readPortal() {
+  if (!/(^|\.)escoladist\.com$/.test(location.hostname)) return JSON.stringify({ error: 'Abre el portal de Escolà e inicia sesión.' });
+  const post = (url, body) => fetch(url, { method: 'POST', body, credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' } })
+    .then((r) => { if (!r.ok) throw Error(r.status); return r.json(); });
+  const iso = (f) => String(f).split('/').reverse().join('');
+  let res;
+  try { res = await post('/Repartos/RepartosDatos', 'codReparto=&status=Q&sentido=desc&verTodas=true'); } catch (e) {
+    return JSON.stringify({ error: 'Primero entra con tu usuario del portal y luego pulsa «Traer mi ruta».' });
+  }
+  try {
+    const list = (res.data || []).filter((e) => /^[PR]$/.test(e.status)).sort((a, b) => iso(b.fecha) - iso(a.fecha)).slice(0, 4);
+    const routes = [];
+    for (const e of list) {
+      const pts = (await post('/Repartos/PuntosEntregaDatos', 'draw=1&start=0&length=-1&paginate=0&id_entrega=' + encodeURIComponent(e.id_entrega))).data || [];
+      routes.push({ fecha: String(e.fecha), paradas: new Set(pts.map((p) => p.id_cliente)).size, text: JSON.stringify({ ruta: 'escola-portal', v: 1, fecha: e.fecha, id: e.id_entrega,
+        paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden, p.botellas, p.cajas_2, p.cajas_3a5, p.cajas_6a11, p.cajas_12mas]) }) });
+    }
+    return JSON.stringify({ routes });
+  } catch (e) {
+    return JSON.stringify({ error: 'El portal no ha contestado bien (' + String(e.message || e).slice(0, 40) + '). Prueba otra vez en un momento.' });
+  }
+}
+
+/** El cuerpo de función que la app de iPhone ejecuta dentro del portal (callAsyncJavaScript). */
+export const portalReaderBody = () => `return await (${readPortal.toString()})();`;
+
 /**
  * La ruta que manda la APK: «#portal=<json>&n=<código>». El código lo inventa esta web, se lo pasa a la APK
  * al abrir el portal y la APK lo devuelve: un enlace de WhatsApp con «#portal=…» no lo sabe.

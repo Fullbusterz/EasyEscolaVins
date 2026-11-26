@@ -1,10 +1,10 @@
 # Ruta Escolà
 
-App web para el móvil (se instala como una app normal) que ordena la ruta de reparto teniendo en cuenta el tráfico y los horarios de entrega de cada cliente.
+App para el móvil que ordena la ruta de reparto con tiempos de openrouteservice y tráfico de TomTom y los horarios de entrega de cada cliente. En iPhone es una app de verdad (TestFlight, ver [native/LEEME.md](native/LEEME.md)); en Android y en el ordenador, una web que se instala como una app.
 
 ## Cómo se usa
 
-1. **El día antes** (la ruta sale en el portal sobre las 17:30): **Traer la ruta del portal** la trae con direcciones, teléfonos y horarios. En Android lo hace la APK 1.3.0 (y puede avisarte cuando salga); en iPhone y en el ordenador, el marcador, que se guarda una vez igual que se instala la APK. Si no, pega la lista o añade las paradas a mano. Luego, **Optimizar ruta**.
+1. **El día antes** (la ruta sale en el portal sobre las 17:30): **Traer la ruta del portal** la trae con direcciones, teléfonos y horarios. En la app de iPhone abre el portal dentro y basta con pulsar «Traer mi ruta». En Android lo hace la APK 1.3.0 (y puede avisarte cuando salga). En Safari y en el ordenador, el marcador, que se guarda una vez igual que se instala la APK. Si no, pega la lista o añade las paradas a mano. Luego, **Optimizar ruta**.
    Al traerla, la app te pregunta **cuánto crees que tardarás** en cada parada nueva.
 2. **Recalcular**, cuando quieras (antes de salir o en plena ruta): vuelve a calcular el orden con el tráfico de ese momento.
 3. **Empezar ruta** el día del reparto y **Waze** te lleva a la primera parada. Al terminar cada parada pulsa **Siguiente** (la entrega se registra en la tablet; si te equivocas, **Deshacer**): recalcula desde donde estás y te da la siguiente.
@@ -32,26 +32,47 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 
 **Mapa y aparcar una vez para varias entregas.** El botón **Mapa** enseña las paradas numeradas en el orden de la ruta, el camino en furgoneta y los tramos a pie. Con **Agrupar entregas para aparcar** tocas en el mapa las entregas que harás desde un mismo sitio (eso lo decides tú, que sabes dónde suele haber hueco) y la app propone dónde dejar la furgoneta: la zona de carga y descarga con la que menos se anda (datos abiertos del Ayuntamiento de Barcelona) o el punto medio si no hay ninguna. Dice cuántos minutos a pie hay a cada una, cuánto rato estarás aparcado frente a los 30 min de SPRO y si alguien llegaría tarde. **Otro sitio** propone la siguiente zona; también puedes arrastrar la P o tocar un punto azul (zona de carga y descarga). **Aceptar** lo mete en la ruta: Waze te lleva al aparcamiento y las demás entregas del grupo se hacen a pie. **Quitar los aparcamientos** (en el mapa) los deshace todos de una vez.
 
-## Servicios de mapas (todos permiten uso de empresa)
+## Servicios de mapas
 
+- **Rutas y tráfico: TomTom y openrouteservice.** openrouteservice calcula los tiempos de carretera entre paradas. TomTom añade el tráfico a la ruta elegida. Para ir a una parada se sigue abriendo **Waze o Google Maps**, el que se elija en Ajustes.
 - **Direcciones:** geocodificador oficial del ICGC y, si no encuentra la dirección, CartoCiudad (IGN). Los dos son CC BY 4.0, así que se pueden guardar y compartir entre repartidores. Antes de buscar, la app traduce "Calle Mayor, Esplugas" a "Carrer Major, Esplugues". Si el resultado cae en otra población o en otra calle, la parada queda "Sin ubicar" hasta que la confirmes.
 - **Locales por su nombre:** OpenStreetMap (Nominatim), como mucho una petición por segundo.
-- **Tiempos de conducción:** openrouteservice, con una clave gratuita de account.heigit.org (500 consultas al día, la app gasta unas 20). Sin clave, la app ordena las paradas por distancia aproximada.
-- **Las claves son de cada repartidor.** Cada uno pone las suyas en Ajustes y se quedan en su móvil: ni «Pasar configuración» ni la copia de seguridad las llevan, y si un archivo antiguo las trae, al importarlo se ignoran.
 - **Mapa:** cartografía del ICGC (CC BY 4.0, con datos de OpenStreetMap fuera de Cataluña), dibujada con Leaflet (incluido en `vendor/`).
-- **Tráfico en tiempo real (opcional):** clave gratuita de TomTom (20.000 rutas al mes). Por cada cálculo, la app pide a TomTom la ruta elegida (de 1 a 3 consultas), corrige los tramos con atasco y vuelve a optimizar. Esos tiempos no se guardan, porque las condiciones de TomTom no lo permiten.
+
+### Rutas y tráfico: TomTom y openrouteservice
+
+El encargado crea dos cuentas gratuitas, sin tarjeta:
+
+1. En <https://developer.tomtom.com>, crea una cuenta gratuita y copia la clave del panel.
+2. En <https://account.heigit.org>, crea una cuenta, elige el plan Standard gratuito y copia la clave.
+3. En GitHub → *Settings* → *Secrets and variables* → *Actions*, crea los secretos `TOMTOM_KEY` y `ORS_KEY` con esas claves. La publicación las mete en la web y en la app de iPhone. Mantén `PUBLICAR_CON_ACTIONS = si` y Pages → *Source: GitHub Actions*.
+
+Las claves personales siguen funcionando si algún móvil ya tenía una guardada. En Ajustes → Más ajustes se puede probar cada servicio.
+
+### Límites gratuitos
+
+- **TomTom:** 20.000 consultas de ruta al mes. La app limita cada móvil a 40 al día; con 15 móviles durante 31 días son 18.600. Si se agota la cuota, las consultas se bloquean y se usan tiempos aproximados.
+- **openrouteservice Standard:** 500 matrices al día y 40 por minuto para toda la empresa. La app limita cada móvil a 25 al día; con 15 móviles son 375 al día. Al llegar al límite del móvil, usa tiempos aproximados y sigue funcionando.
+
+Las dos cuentas son gratuitas y no piden tarjeta: no se puede generar ningún cobro. Si alguien copia una clave, como mucho se gasta la cuota y la app usa rutas aproximadas hasta que se renueve.
 
 ## Instalar en el móvil
 
-Tiene que estar publicada en una dirección https, por ejemplo con Netlify Drop o GitHub Pages: se sube la carpeta `app` tal cual. Luego, desde el móvil:
-- **Android (Chrome)**: menú ⋮, "Añadir a pantalla de inicio".
-- **iPhone (Safari)**: botón Compartir, "Añadir a pantalla de inicio".
+Tiene que estar publicada en una dirección https, por ejemplo con GitHub Pages: se sube la carpeta tal cual. Luego, desde el móvil:
+- **Android (Chrome)**: menú ⋮, "Añadir a pantalla de inicio", o la APK.
+- **iPhone: la app de verdad**, desde TestFlight. Es lo recomendable: trae la ruta del portal con un botón, no borra los datos y no hay marcador. Cómo publicarla: [native/LEEME.md](native/LEEME.md).
+- **iPhone sin la app (Safari)**: botón Compartir, "Añadir a pantalla de inicio".
 
-**En iPhone, icono o Safari.** Desde el icono la ruta entra con **Pegar la ruta** (iOS no deja que nada entre solo en una app instalada); en Safari entra sola al tocarla en el portal, pero Safari puede borrar los datos tras unos días sin abrir la app, así que conviene hacer copia de seguridad. La app detecta en cuál de los dos está y prepara el marcador para esa manera; se cambia a mano al guardarlo.
+**En iPhone, icono o Safari** (solo sin la app). Desde el icono la ruta entra con **Pegar la ruta**, porque iOS no deja que nada entre solo en una web instalada. En Safari entra sola al tocarla en el portal, pero Safari puede borrar los datos tras unos días sin abrir la app, así que conviene hacer copia de seguridad. La app detecta en cuál de los dos está y prepara el marcador para esa manera; se cambia a mano al guardarlo.
+
+## Letra del móvil
+
+La app usa la letra del propio móvil y, en iPhone, sigue el **«Tamaño del texto»** que cada uno tenga puesto (Ajustes → Pantalla y brillo). Safari no lo aplica a las webs, así que la app lo lee del sistema. No hay nada que configurar en la app: si alguien tiene la letra grande en el iPhone, la ve grande, y nada se sale de la pantalla.
 
 ## Para desarrollo
 
 - `npm test`: tests del optimizador, del lector de listas y de los aparcamientos.
 - `node tools/dum-bcn.mjs <csv>`: regenera `data/dum-bcn.json` con el CSV de zonas de carga y descarga de Open Data BCN.
-- `node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat.
+- `ORS_KEY=… TOMTOM_KEY=… node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat (con las claves de empresa, tiempos de verdad; sin ellas, estimados).
+- `native/`: la app de iPhone (Capacitor). Ver [native/LEEME.md](native/LEEME.md).
 - Al publicar cambios, sube `VERSION` en `sw.js` y en `js/app.js`: los móviles verán "Hay una versión nueva · Actualizar".

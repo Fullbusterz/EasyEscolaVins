@@ -1,0 +1,16 @@
+{
+  "appId": "com.flixescola.ruta",
+  "appName": "Ruta Escolà",
+  "webDir": "www",
+  "backgroundColor": "#0a0b0a",
+  "ios": {
+    "contentInset": "never",
+    "scheme": "Ruta",
+    "preferredContentMode": "mobile",
+    "allowsLinkPreview": false
+  },
+  "plugins": {
+    "SplashScreen": { "launchShowDuration": 0, "backgroundColor": "#0a0b0a", "showSpinner": false },
+    "StatusBar": { "style": "DARK", "overlaysWebView": true }
+  }
+}

@@ -1,4 +1,4 @@
-// Prueba de extremo a extremo con direcciones reales (ICGC/CartoCiudad) y tiempos de openrouteservice si hay ORS_KEY y direcciones reales del área de reparto.
+// Prueba de extremo a extremo con direcciones reales (ICGC/CartoCiudad) y tiempos de carretera y tráfico si hay ORS_KEY y TOMTOM_KEY y direcciones reales del área de reparto.
 const _f = globalThis.fetch; globalThis.fetch = (u, o = {}) => _f(u, { ...o, headers: { ...(o.headers || {}), 'User-Agent': 'RutaEscola-test/0.1 (dev test)' } });
 import { geocode } from '../js/geo.js';
 import { computePlan } from '../js/planner.js';
@@ -35,5 +35,5 @@ for (const l of plan.legs) {
 const first = stops.find(s => s.id === plan.order[0]);
 const rest = stops.filter(s => s.id !== first.id);
 const t0 = Date.now();
-const p2 = await computePlan({ from: first, depot, stops: rest, startMin: plan.legs[0].begin + 10, departAt: new Date(), pairs: plan.pairs, orsKey: process.env.ORS_KEY });
+const p2 = await computePlan({ from: first, depot, stops: rest, startMin: plan.legs[0].begin + 10, departAt: new Date(), pairs: plan.pairs, orsKey: process.env.ORS_KEY, tomtomKey: process.env.TOMTOM_KEY });
 console.log(`\nSiguiente desde ${first.name}: ${stops.find(s => s.id === p2.order[0]).name} a las ${fmt(p2.legs[0].arrive)} (${Date.now() - t0} ms, reutiliza pares: ${Object.keys(p2.pairs).length === Object.keys(plan.pairs).length})`);

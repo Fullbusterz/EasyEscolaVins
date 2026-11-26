@@ -54,6 +54,9 @@ function load() {
       if (clean) clients[clean.key] = clean;
     }
     const settings = { ...base.settings, ...(data.settings || {}) };
+    delete settings.googleKey;
+    for (const r of Object.values(data.routes || {})) if (r && typeof r === 'object') r.pairs = {};
+    delete settings.textScale;
     // 04/11/2026: los horarios, que estaban apagados (1.9.0), vuelven encendidos y con margen.
     if (data.settings?.hoursV !== 2) Object.assign(settings, { useWindows: true, hoursV: 2 });
     // 09/11/2026: el tiempo de una entrega pasa a contar las cajas (los viajes con la carretilla) y lo que
@@ -292,9 +295,9 @@ export function exportClients() {
   return JSON.stringify({ app: 'ruta-escola', version: 1, exportedAt: new Date().toISOString(), clients: state.clients }, null, 2);
 }
 
-// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves (son personales).
+// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves ni el uso de los servicios.
 export function exportBackup() {
-  const { tomtomKey, orsKey, ...rest } = state.settings;
+  const { googleKey, tomtomKey, orsKey, usage, ...rest } = state.settings;
   const routes = Object.fromEntries(Object.entries(state.routes).map(([d, r]) => [d, { ...r, pairs: {} }]));
   return JSON.stringify({ app: 'ruta-escola', kind: 'backup', version: 2, exportedAt: new Date().toISOString(), settings: rest, clients: state.clients, routes });
 }

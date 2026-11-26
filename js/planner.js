@@ -1,7 +1,15 @@
-// Une la matriz de tiempos con el optimizador y guarda los tiempos entre paradas para reutilizarlos
-// en cada "Siguiente" (así solo se pide de nuevo la fila desde donde estás, que es la que cambia).
+// Une los tiempos de carretera y el tráfico con el optimizador.
+//
+// Pedir todos los pares de 25 paradas son 676 tiempos en cada cálculo. Pero
+// una buena ruta casi nunca salta de una punta a la otra: va de una parada a alguna de sus vecinas. Así que
+// se piden solo los pares entre cada parada y sus vecinas más cercanas (y la salida a todas); los demás se
+// estiman con la línea recta y los minutos por kilómetro que ORS acaba de dar para esa zona. Luego la
+// consulta con tráfico de la ruta elegida pone los tiempos de verdad en los tramos que se van a hacer.
+//
+// Los pares se reutilizan en cada «Siguiente» y al añadir una parada solo se piden los suyos. Viven en
+// memoria (app.js) durante el día.
 
-import { travelMatrix, trafficLegs } from './geo.js';
+import { orsMatrix, trafficLegs, haversineKm, trafficFactor, estimate, calibrate, guess, sameSpot, netWarning } from './geo.js';
 import { optimize, evaluate } from './solver.js';
 import { walkPlan, walkMin } from './parking.js';
 
@@ -9,57 +17,106 @@ import { walkPlan, walkMin } from './parking.js';
 const nodeKey = (p, id) => `${id}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
 const pairKey = (a, b) => `${a}>${b}`;
 
-// pairs: { "idA@lat,lon>idB@lat,lon": { m: minutos, km, at: timestamp, src } }
-function haveFreshPairs(keys, pairs, src, maxAgeMin) {
-  const limit = Date.now() - maxAgeMin * 60000;
-  for (let i = 0; i < keys.length - 1; i++) {
-    for (let j = 0; j < keys.length; j++) {
-      if (i === j) continue;
-      const p = pairs[pairKey(keys[i], keys[j])];
-      if (!p || p.src !== src || p.at < limit) return false;
-    }
+// Con pocas paradas se piden todos los pares (son pocos); con más, cada parada con sus vecinas.
+export const FULL_UP_TO = 6;
+export const NEIGHBORS = 5;
+
+// Índices de `list` más cercanos a p (en línea recta), sin contar `skip`.
+const nearest = (p, list, k, skip = -1) => list.map((q, idx) => ({ idx, d: haversineKm(p, q) }))
+  .filter((x) => x.idx !== skip).sort((a, b) => a.d - b.d).slice(0, k).map((x) => x.idx);
+
+/**
+ * Qué pares (índices de nodo: 1..n paradas, n+1 almacén) merece la pena pedir entre las paradas.
+ * Todos con todos hasta FULL_UP_TO paradas; con más, cada parada con sus NEIGHBORS más cercanas, en los dos
+ * sentidos. Devuelve una lista de [i, j].
+ */
+export function wantedPairs(stops, { full = FULL_UP_TO, k = NEIGHBORS, returnToDepot = true } = {}) {
+  const n = stops.length;
+  const out = new Map();
+  const add = (i, j) => { if (i !== j) out.set(`${i},${j}`, [i, j]); };
+  if (n <= full) {
+    for (let i = 1; i <= n; i++) for (let j = 1; j <= n; j++) add(i, j);
+    if (returnToDepot) for (let i = 1; i <= n; i++) add(i, n + 1);
+  } else {
+    stops.forEach((s, a) => {
+      for (const b of nearest(s, stops, k, a)) { add(a + 1, b + 1); add(b + 1, a + 1); }
+    });
   }
-  return true;
+  return [...out.values()];
 }
 
 /**
  * from: {lat, lon} punto de salida. stops: [{id, lat, lon, windows:[[a,b]], service}].
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
- * maxAgeMin: antigüedad máxima de los tiempos entre paradas guardados para reutilizarlos.
- * orsKey: openrouteservice (tiempos de conducción). tomtomKey + live: corrección con tráfico (no se guarda).
+ * orsKey: clave de openrouteservice. tomtomKey: clave de TomTom. Sin ellas se estima por distancia. live: tráfico de ahora (si no, el previsto).
+ * trafficRounds: consultas de tráfico como mucho. Con 0 se reutiliza `hint`, lo que dijo TomTom la última vez
+ * ({ perKm, pairs }, devuelto como `traffic`).
+ * pairs: tiempos entre paradas ya pedidos ({ "idA@lat,lon>idB@lat,lon": { m, km, at, src } }), en memoria.
+ * Son de carretera vacía (sin la hora): el factor de la franja horaria se pone al usarlos.
+ * maxAgeMin: antigüedad máxima de esos tiempos para reutilizarlos (las calles no cambian en un día).
  * parking: aparcamientos aceptados [{ids, lat, lon}]: entre paradas del mismo se va a pie pasando por la furgoneta.
  * parkedAt: índice del aparcamiento donde está ahora la furgoneta (si se sale andando desde from).
  * fixedOrder: ids en el orden que ha puesto el repartidor. Se respeta y solo se calculan las horas; las paradas
  * que no estén (añadidas después) van al final y los ids que ya no existen se ignoran.
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
-  if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs };
-  const src = orsKey ? 'ors' : 'estimate';
-  const dests = [...stops, depot];
-  // keys[i] para i < n: paradas; keys[n]: almacén.
-  const keys = [...stops.map((s) => nodeKey(s, s.id)), nodeKey(depot, 'depot')];
-  const reusePairs = haveFreshPairs(keys, pairs, src, maxAgeMin);
-  const origins = reusePairs ? [from] : [from, ...stops];
-  const mx = await travelMatrix(origins, dests, { orsKey, departAt });
-
+export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, trafficRounds = 3, hint = null, pairs = {}, maxAgeMin = 12 * 60, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
+  if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs: {} };
+  const n = stops.length;
+  const depart = departAt instanceof Date ? departAt : new Date();
   const now = Date.now();
-  const next = {};
-  // Solo se conservan los pares de las paradas actuales: lo demás es peso muerto en el móvil.
-  for (let i = 0; i < stops.length; i++) {
-    for (let j = 0; j < keys.length; j++) {
-      if (i === j) continue;
-      const k = pairKey(keys[i], keys[j]);
-      if (reusePairs) next[k] = pairs[k];
-      else next[k] = { m: mx.minutes[i + 1][j], km: mx.km[i + 1][j], at: now, src: mx.source };
+  // Nodos: 0 = salida, 1..n = paradas, n+1 = almacén.
+  const fromIsDepot = sameSpot(from, depot);
+  const keys = [fromIsDepot ? nodeKey(depot, 'depot') : null, ...stops.map((s) => nodeKey(s, s.id)), nodeKey(depot, 'depot')];
+  const point = (i) => (i === 0 ? from : i === n + 1 ? depot : stops[i - 1]);
+  const limit = now - maxAgeMin * 60000;
+  const fresh = (k) => { const p = pairs[k]; return p && p.src === 'ors' && p.at >= limit ? p : null; };
+
+  // Lo que ya se sabe (de antes o de ahora) y lo que hay que pedir.
+  const known = new Map(); // "i,j" -> { m, km }
+  const next = {}; // pares que se quedan en memoria para el próximo cálculo
+  let warning, source = 'estimate';
+  if (orsKey) {
+    const want = wantedPairs(stops, { returnToDepot });
+    // Salida: desde el almacén se piden todas (y se quedan para luego). Desde donde estás (en ruta) no se pide
+    // nada: se estima, y la consulta con tráfico de la ruta elegida da luego el tiempo exacto de ese tramo.
+    const fromRow = fromIsDepot ? stops.map((_, i) => [0, i + 1]) : [];
+    const missing = [];
+    for (const [i, j] of [...fromRow, ...want]) {
+      const k = keys[i] && pairKey(keys[i], keys[j]);
+      const hit = k && fresh(k);
+      if (hit) { known.set(`${i},${j}`, hit); next[k] = hit; } else missing.push([i, j]);
+    }
+    try {
+      if (missing.length) {
+        const pts = Array.from({ length: n + 2 }, (_, i) => point(i));
+        const got = await orsMatrix(pts, pts, { key: orsKey, cells: missing });
+        for (const x of got) {
+          const v = { m: x.min, km: x.km, at: now, src: 'ors' };
+          known.set(`${x.i},${x.j}`, v);
+          if (keys[x.i]) next[pairKey(keys[x.i], keys[x.j])] = v;
+        }
+      }
+      source = 'ors';
+    } catch (e) {
+      warning = netWarning(e);
     }
   }
 
-  const n = stops.length;
+  // Minutos por kilómetro en línea recta según ORS, para estimar los pares que no se han pedido.
+  const perKm = calibrate([...known.entries()].map(([ij, v]) => {
+    const [i, j] = ij.split(',').map(Number);
+    return { min: v.m, km: haversineKm(point(i), point(j)) };
+  }));
+  // Lo de ORS es carretera vacía: la hora de salida pone el factor de tráfico de esa franja.
+  const f = trafficFactor(depart);
   const minutes = (i, j) => {
-    // i, j: 0 = salida, 1..n = paradas, n+1 = almacén
-    if (i === 0) return { m: mx.minutes[0][j - 1], km: mx.km[0][j - 1] };
     if (i === j) return { m: 0, km: 0 };
-    return next[pairKey(keys[i - 1], keys[j - 1])];
+    let hit = known.get(`${i},${j}`);
+    // De una parada al almacén: lo mismo que del almacén a ella, si se sabe (casi siempre es la misma vía).
+    if (!hit && j === n + 1 && fromIsDepot) hit = known.get(`0,${i}`);
+    if (hit) return { m: hit.m * f, km: hit.km };
+    const a = point(i), b = point(j);
+    return { m: perKm ? guess(a, b, perKm) * f : sameSpot(a, b) ? 0 : estimate(a, b) * f, km: haversineKm(a, b) * 1.4 };
   };
 
   // A pie: dentro de un aparcamiento, de la entrega a la furgoneta y de ahí a la siguiente (sin coche);
@@ -103,28 +160,73 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
   const solve = () => (fixed ? evaluateOrder(fixed, ctx) : optimize(ctx));
   let best = solve();
 
-  // Con TomTom: se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
+  // Se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
   // y se vuelve a optimizar; si el orden cambia, se comprueba también el nuevo (máximo 3 consultas).
+  // Si TomTom no responde, se conserva el mejor plan disponible.
+  // Lo que dijo TomTom la última vez (con tráfico): los tramos que se preguntaron van tal cual y los demás se
+  // estiman a la velocidad que había entonces. Así un «Siguiente» no necesita preguntar otra vez.
+  const exact = new Set(); // tramos que ya tienen el tiempo de TomTom con tráfico
+  const trafficPairs = {};
+  let livePerKm = hint?.perKm || null;
+  const usable = (i, j) => i !== j && !onFoot(i, j);
+  if (!known.size && livePerKm) {
+    for (let i = 0; i <= n; i++) {
+      for (let j = 1; j <= n + 1; j++) {
+        if (!usable(i, j)) continue;
+        const t = travel(i, j, guess(point(i), point(j), livePerKm));
+        if (j === n + 1) back[i] = t; else matrix[i][j] = t;
+      }
+    }
+  }
+  for (let i = 0; i <= n && hint?.pairs; i++) {
+    for (let j = 1; j <= n + 1; j++) {
+      const k = keys[i] && pairKey(keys[i], keys[j]);
+      const m = k && hint.pairs[k];
+      if (!(m > 0) || !usable(i, j)) continue;
+      exact.add(`${i},${j}`);
+      trafficPairs[k] = m;
+      if (j === n + 1) back[i] = travel(i, j, m); else matrix[i][j] = travel(i, j, m);
+    }
+  }
+  if (exact.size || (livePerKm && !known.size)) best = solve();
+
   let traffic = false;
   if (tomtomKey) {
     const seen = new Set();
-    for (let round = 0; round < 3; round++) {
-      const key = best.order.join(',');
-      if (seen.has(key)) break;
-      seen.add(key);
+    for (let round = 0; round < trafficRounds; round++) {
+      const order = best.order.join(',');
+      if (seen.has(order)) break;
+      seen.add(order);
       const nodes = [0, ...best.order, ...(returnToDepot ? [n + 1] : [])];
-      const point = (i) => (i === 0 ? from : i === n + 1 ? depot : stops[i - 1]);
       let legsMin = null;
-      try { legsMin = await trafficLegs(nodes.map(point), { key: tomtomKey, departAt, live }); } catch (e) { if (/clave/.test(e.message)) throw e; }
+      try { legsMin = await trafficLegs(nodes.map(point), { key: tomtomKey, departAt: depart, live }); } catch (e) { warning = netWarning(e); break; }
       if (!legsMin) break;
       traffic = true;
       legsMin.forEach((m, k) => {
         const a = nodes[k], b = nodes[k + 1];
         if (onFoot(a, b)) return; // ese tramo se hace andando: el tráfico no cuenta
+        exact.add(`${a},${b}`);
+        if (keys[a]) trafficPairs[pairKey(keys[a], keys[b])] = m;
         if (b === n + 1) back[a] = travel(a, b, m); else matrix[a][b] = travel(a, b, m);
       });
+      // Sin matriz de ORS, lo demás era una estimación a ojo: se rehace con los minutos por kilómetro que
+      // acaba de dar TomTom para esta ruta, con el tráfico de esa hora. Así el siguiente intento compara
+      // órdenes con tiempos que se parecen a los de verdad.
+      if (!known.size) {
+        const live = calibrate(legsMin.map((m, k) => ({ min: m, km: haversineKm(point(nodes[k]), point(nodes[k + 1])) })));
+        if (live) livePerKm = live;
+        if (live) {
+          for (let i = 0; i <= n; i++) {
+            for (let j = 1; j <= n + 1; j++) {
+              if (i === j || exact.has(`${i},${j}`) || onFoot(i, j)) continue;
+              const t = travel(i, j, guess(point(i), point(j), live));
+              if (j === n + 1) back[i] = t; else matrix[i][j] = t;
+            }
+          }
+        }
+      }
       const again = solve();
-      best = again.order.join(',') === key ? evaluateOrder(best.order, ctx) : again;
+      best = again.order.join(',') === order ? evaluateOrder(best.order, ctx) : again;
     }
   }
 
@@ -146,8 +248,10 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     late: best.late,
     wait: best.wait,
     km,
-    source: traffic ? 'tomtom' : mx.source,
-    warning: mx.warning,
+    source: traffic || exact.size ? 'traffic' : source,
+    // Lo que ha dicho TomTom ahora (con tráfico), para no tener que volver a preguntar en un rato (en memoria).
+    traffic: traffic ? { perKm: livePerKm, pairs: trafficPairs } : null,
+    warning,
     live: traffic && !!live,
     computedAt: now,
     startMin,
