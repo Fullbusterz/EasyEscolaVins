@@ -268,9 +268,32 @@ const keepPairs = (date, pairs) => { PAIRS.set(date, pairs || {}); };
 // Lo que se ha consultado a Google este mes en este móvil, para saber lo que se gasta (Ajustes).
 const monthIso = () => store.isoDate().slice(0, 7);
 onGoogleUsage(({ elements = 0, routes = 0 }) => {
-  const u = settings().usage?.month === monthIso() ? settings().usage : { month: monthIso(), elements: 0, routes: 0 };
-  store.setSettings({ usage: { month: u.month, elements: u.elements + elements, routes: u.routes + routes } });
+  const s = settings();
+  const u = s.usage?.month === monthIso() ? s.usage : { month: monthIso(), elements: 0, routes: 0 };
+  const today = s.usage?.day === todayIso() ? s.usage.dayRoutes || 0 : 0;
+  store.setSettings({ usage: { month: u.month, elements: u.elements + elements, routes: u.routes + routes, day: todayIso(), dayRoutes: today + routes } });
 });
+
+// Gratis para toda la empresa. Google regala unas 5.000 rutas con tráfico al mes para toda la cuenta, y somos
+// unos 15 repartidores: unas 10 por repartidor y día. Así que no se pregunta en cada «Siguiente»: lo que dijo
+// Google vale un rato (se reutiliza en memoria) y solo se vuelve a preguntar pasado ese rato o al pulsar
+// «Recalcular». Y cada móvil, como mucho 10 consultas automáticas al día, para no gastar la parte de otros.
+const TRAFFIC_FRESH_MIN = 75;
+const AUTO_PER_DAY = 10;
+const MANUAL_PER_DAY = 16;
+const TRAFFIC = new Map(); // fecha -> { at, perKm, pairs }: lo último que dijo Google, solo en memoria
+const routesToday = () => (settings().usage?.day === todayIso() ? settings().usage.dayRoutes || 0 : 0);
+function trafficPlan(date, { forced = false, rounds = 1 } = {}) {
+  const last = TRAFFIC.get(date);
+  const fresh = last && Date.now() - last.at < TRAFFIC_FRESH_MIN * 60000;
+  const room = (forced ? MANUAL_PER_DAY : AUTO_PER_DAY) - routesToday();
+  const ask = GOOGLE_MATRIX ? 3 : (forced || !fresh) && room > 0 ? Math.min(rounds, room) : 0;
+  return { trafficRounds: ask, hint: last || null };
+}
+function keepTraffic(date, plan) {
+  if (plan.traffic) TRAFFIC.set(date, { at: Date.now(), ...plan.traffic });
+  delete plan.traffic;
+}
 
 function signature(r) {
   return JSON.stringify([
@@ -1495,9 +1518,11 @@ async function optimize({ recalc = false } = {}) {
   ui.busy = live && googleKey() ? 'Mirando el tráfico…' : 'Calculando la ruta…';
   render();
   try {
-    // Para que toda la empresa quepa en lo gratuito de Google: como mucho 2 consultas al planificar.
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: googleKey(), live, matrix: GOOGLE_MATRIX, trafficRounds: GOOGLE_MATRIX ? 3 : 2, pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
+    // Para que toda la empresa quepa en lo gratuito de Google: como mucho 2 consultas al planificar, y ninguna si
+    // se ha preguntado hace poco (salvo con «Recalcular»).
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: googleKey(), live, matrix: GOOGLE_MATRIX, ...trafficPlan(ui.date, { forced: recalc, rounds: 2 }), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
     keepPairs(ui.date, plan.pairs); delete plan.pairs;
+    keepTraffic(ui.date, plan);
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
     const what = r.manual ? `Horas con tu orden · vuelta ${fmt(plan.end)}${plan.late > 0.5 ? ' · alguien queda fuera de horario' : ''}`
@@ -1528,7 +1553,7 @@ function startRoute() {
 }
 
 // Recalcula lo que queda desde donde estás (GPS o la última parada) con tráfico en vivo.
-async function replanActive(msg) {
+async function replanActive(msg, { forced = false } = {}) {
   const r = currentRoute();
   const s = settings();
   ui.busy = 'Calculando la siguiente…';
@@ -1554,11 +1579,12 @@ async function replanActive(msg) {
   const parkedAt = g >= 0 && parking[g].ids.some((id) => active.some((a) => a.id === id)) ? g : null;
   try {
     const plan = await computePlan({
-      // En ruta, una sola consulta por «Siguiente».
-      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: googleKey(), live: true, matrix: GOOGLE_MATRIX, trafficRounds: GOOGLE_MATRIX ? 3 : 1,
+      // En ruta: una consulta si lo último de Google ya es viejo o si se pulsa «Recalcular»; si no, ninguna.
+      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: googleKey(), live: true, matrix: GOOGLE_MATRIX, ...trafficPlan(ui.date, { forced }),
       stops: active.map(planStop), pairs: pairsOf(ui.date), returnToDepot: s.returnToDepot, parking, parkedAt, fixedOrder: r.manual || null,
     });
     keepPairs(ui.date, plan.pairs); delete plan.pairs;
+    keepTraffic(ui.date, plan);
     plan.order.push(...r.postponed.filter((id) => postponed.has(id)));
     r.plan = plan; r.planSig = signature(r);
     r.current = plan.order[0];
@@ -1686,7 +1712,7 @@ const actions = {
   day: (el) => { ui.date = addDays(ui.date, +el.dataset.d); render(); },
   'goto-tomorrow': () => { ui.date = addDays(todayIso(), 1); render(); },
   optimize: () => optimize(),
-  recalc: () => (currentRoute().status === 'active' ? replanActive('Recalculada con el tráfico de ahora') : optimize({ recalc: true })),
+  recalc: () => (currentRoute().status === 'active' ? replanActive('Recalculada con el tráfico de ahora', { forced: true }) : optimize({ recalc: true })),
   'start-route': () => startRoute(),
   next: () => { tap(); finishCurrent(); },
   parked: () => { tap(); parkHere(); },

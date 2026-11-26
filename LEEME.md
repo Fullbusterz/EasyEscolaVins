@@ -41,14 +41,16 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 
 ### Cómo usa la app Google (sin pagar)
 
-Para que toda la empresa quepa en lo que Google regala cada mes, la app solo hace una consulta: **la ruta elegida, con tráfico** (*Compute Routes*), con todas las paradas en orden.
+Para que toda la empresa (unos 15 repartidores) quepa en lo que Google regala cada mes, la app solo hace una consulta: **la ruta elegida, con tráfico** (*Compute Routes*), con todas las paradas en orden. Y la hace pocas veces:
 
-- **Al planificar:** primero se ordena por distancia y luego se pregunta a Google por esa ruta con el tráfico previsto. Con lo que contesta se corrigen los tramos con atasco y se ajustan los demás tiempos a la velocidad real de ese día. Se vuelve a ordenar y, si el orden cambia, se pregunta otra vez. Como mucho son 2 consultas.
-- **En cada «Siguiente»:** 1 consulta, con el tráfico de ahora.
+- **Al planificar:** primero se ordena por distancia y luego se pregunta a Google por esa ruta con el tráfico previsto. Con lo que contesta se corrigen los tramos con atasco y se ajustan los demás tiempos a la velocidad real de ese día. Si el orden cambia, se pregunta otra vez. Como mucho son 2 consultas.
+- **En «Siguiente»:** se reutiliza lo que dijo Google la última vez. Solo se vuelve a preguntar si han pasado más de **75 minutos**.
+- **«Recalcular»:** pregunta siempre, porque lo ha pedido el repartidor.
+- **Cada móvil, como mucho 10 consultas automáticas al día**, y 16 contando los «Recalcular». Pasado eso sigue con lo último que dijo Google y la velocidad de ese día. Así nadie gasta la parte de los demás.
 
 Hay un modo más fino que además pide la tabla de tiempos entre paradas (`GOOGLE_MATRIX` en `js/config.js`). Está **apagado**, porque con varios repartidores se pasa de lo gratuito.
 
-Los tiempos de Google **no se guardan en el móvil**: sus condiciones no lo permiten. En Ajustes → Más ajustes se ve cuánto ha consultado ese móvil este mes.
+Los tiempos de Google **no se guardan en el móvil**: sus condiciones no lo permiten. Se quedan en memoria mientras la app está abierta. En Ajustes → Más ajustes se ve cuánto ha consultado ese móvil este mes.
 
 ### Poner la clave de Google (el encargado, una vez para todos)
 
@@ -70,9 +72,9 @@ La clave de la web se ve en el código de la página, como la de cualquier mapa 
 
 Google regala cada mes **5.000 rutas con tráfico** para toda la cuenta de la empresa, no por repartidor. Es el dato de 2025; compruébalo en <https://developers.google.com/maps/billing-and-pricing/pricing>. Pide una tarjeta para dar de alta la cuenta, pero no cobra mientras no se pase de ahí.
 
-Un repartidor con 20 paradas gasta unas **24 rutas al día**: 2 al planificar, 2 si recalcula y 1 por parada. Son unas 530 al mes, así que **caben unos 9 repartidores gratis**.
+Un repartidor gasta unas **9 rutas al día**: 2 al planificar, unas 5 a lo largo de la ruta (una cada 75 minutos) y algún «Recalcular». Con **15 repartidores** son unas 3.000 al mes, por debajo de las 5.000.
 
-Para que **nunca** se pueda cobrar nada, en la consola de Google se pone un **tope de 160 rutas al día** (5.000 entre 31 días). Si un día se llega al tope, la app sigue funcionando con distancias aproximadas hasta el día siguiente y lo avisa.
+Para que **nunca** se pueda cobrar nada, en la consola de Google se pone un **tope de 160 rutas al día** (5.000 entre 31 días). Si un día se llega al tope, la app sigue funcionando con distancias aproximadas hasta el día siguiente.
 
 ## Instalar en el móvil
 

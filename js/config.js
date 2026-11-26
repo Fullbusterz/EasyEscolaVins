@@ -19,6 +19,6 @@ export const GOOGLE_MAPS_KEY = '';
 export const GOOGLE_MAPS_KEY_IOS = '';
 
 // GOOGLE_MATRIX: pedir también a Google la tabla de tiempos entre paradas. Apagado: así toda la empresa cabe en
-// lo que Google regala cada mes (solo se pide la ruta con tráfico, una o dos veces por cálculo). Encenderlo da
+// lo que Google regala cada mes (solo se pide la ruta con tráfico, y no en cada «Siguiente»: ver app.js). Encenderlo da
 // un orden algo más fino, pero con varios repartidores se pasa de lo gratuito (ver LEEME, «Cuánto cuesta»).
 export const GOOGLE_MATRIX = false;

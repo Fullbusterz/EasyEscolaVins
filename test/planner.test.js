@@ -241,3 +241,16 @@ test('sin matriz, un atasco sigue cambiando el orden', async () => {
   jam = null;
   assert.deepEqual(p.order, ['b', 'a']);
 });
+
+test('lo que dijo Google se reutiliza: un «Siguiente» sin preguntar mantiene el atasco que se vio', async () => {
+  reset();
+  jam = (from, to) => (near(from, depot) && near(to, stops[0]) ? 60 : 5);
+  const p1 = await computePlan({ ...base, stops, matrix: false, trafficRounds: 2, live: true });
+  jam = null;
+  assert.ok(p1.traffic?.perKm > 0 && Object.keys(p1.traffic.pairs).length >= 2);
+  reset();
+  const p2 = await computePlan({ ...base, stops, matrix: false, trafficRounds: 0, hint: p1.traffic });
+  assert.equal(routeCalls.length, 0, 'sin consultas');
+  assert.deepEqual(p2.order, ['b', 'a'], 'el atasco de antes sigue contando');
+  assert.equal(p2.traffic, null);
+});
