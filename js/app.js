@@ -14,7 +14,7 @@ import { parsePortal, readPortalHash, bridgeUrl, portalReaderBody } from './port
 import * as store from './store.js';
 import { watchTextSize, watchBars } from './textsize.js';
 
-export const VERSION = '1.20.0';
+export const VERSION = '1.20.2';
 
 // ---------- Utilidades ----------
 
@@ -439,6 +439,7 @@ function loadDemo() {
   const base = Math.ceil(nowMin() / 15) * 15;
   r.stops = DEMO.map(([name, address, lat, lon, from, to], i) => ({
     id: `demo${i}`, demo: true, name, address, label: address, lat, lon, service: 12, done: false,
+    windowsConfirmed: true, // horarios inventados a partir de ahora: sin el aviso de «horario raro»
     windows: from == null ? [] : [[Math.min(base + from, 23 * 60), Math.min(base + to, 23 * 60 + 59)]],
     notes: i === 1 ? 'Parada de práctica: prueba aquí el botón SPRO y «Dejar para luego».' : '',
   }));
