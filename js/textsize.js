@@ -6,7 +6,7 @@
 // 53 px con los de accesibilidad), así que aquí se lee ese tamaño y se pone a toda la app: como todo el CSS
 // va en rem, todo crece a la vez, como en una app de verdad.
 //
-// Encima de eso, el tamaño que se elija en Ajustes de la app (Normal, Grande, Muy grande, Enorme).
+// El repartidor no tiene que tocar nada en la app: vale lo que tenga puesto en el iPhone.
 //
 // Con la letra grande no caben tres columnas en un móvil: según cuántas letras caben a lo ancho se pone
 // <html class="big"> o "huge", y el CSS pasa a poner las cosas una debajo de otra.

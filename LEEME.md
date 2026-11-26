@@ -93,13 +93,9 @@ Tiene que estar publicada en una dirección https, por ejemplo con GitHub Pages:
 
 **En iPhone, icono o Safari** (solo sin la app). Desde el icono la ruta entra con **Pegar la ruta**, porque iOS no deja que nada entre solo en una web instalada. En Safari entra sola al tocarla en el portal, pero Safari puede borrar los datos tras unos días sin abrir la app, así que conviene hacer copia de seguridad. La app detecta en cuál de los dos está y prepara el marcador para esa manera; se cambia a mano al guardarlo.
 
-## Letra grande
+## Letra del móvil
 
-Muchos repartidores tienen la letra del móvil grande. La app la sigue:
-
-- **iPhone:** usa el **«Tamaño del texto»** del iPhone (Ajustes → Pantalla y brillo → Tamaño del texto, y también los tamaños grandes de Accesibilidad). Safari no lo aplica a las webs, así que la app lo lee del sistema y agranda todo a la vez.
-- **En la app:** Ajustes → **Tamaño de la letra** (Normal, Grande, Muy grande, Enorme), encima del tamaño del móvil.
-- Con la letra grande, lo que iba en tres columnas pasa a ir en filas, los botones van uno debajo de otro y nada se sale de la pantalla. La letra es la del propio móvil (San Francisco en iPhone, Roboto en Android).
+La app usa la letra del propio móvil y, en iPhone, sigue el **«Tamaño del texto»** que cada uno tenga puesto (Ajustes → Pantalla y brillo). Safari no lo aplica a las webs, así que la app lo lee del sistema. No hay nada que configurar en la app: si alguien tiene la letra grande en el iPhone, la ve grande, y nada se sale de la pantalla.
 
 ## Para desarrollo
 

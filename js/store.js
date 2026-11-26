@@ -16,8 +16,6 @@ const empty = () => ({
   settings: {
     // Clave de Google de este móvil. Normalmente vacía: se usa la de la empresa (js/config.js).
     googleKey: '',
-    // Tamaño de la letra de la app, encima del que tenga el móvil (1 = el del móvil).
-    textScale: 1,
     depot: DEFAULT_DEPOT,
     shiftStart: '07:30',
     // Descarga: lo fijo de una entrega una vez aparcado. Lo que suman las cajas (viajes con la carretilla)
@@ -60,7 +58,7 @@ function load() {
     // los tiempos entre paradas que se guardaban de openrouteservice, ya no sirven.
     delete settings.orsKey; delete settings.tomtomKey;
     for (const r of Object.values(data.routes || {})) if (r && typeof r === 'object') r.pairs = {};
-    if (!(settings.textScale >= 0.85 && settings.textScale <= 2)) settings.textScale = 1;
+    delete settings.textScale;
     // 04/11/2026: los horarios, que estaban apagados (1.9.0), vuelven encendidos y con margen.
     if (data.settings?.hoursV !== 2) Object.assign(settings, { useWindows: true, hoursV: 2 });
     // 09/11/2026: el tiempo de una entrega pasa a contar las cajas (los viajes con la carretilla) y lo que

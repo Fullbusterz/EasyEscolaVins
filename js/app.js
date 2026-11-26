@@ -12,7 +12,7 @@ import { serviceStart } from './solver.js';
 import { cleanEntry, goTo, entryDistanceM } from './entry.js';
 import { parsePortal, readPortalHash, bridgeUrl, portalReaderBody } from './portal.js';
 import * as store from './store.js';
-import { watchTextSize, watchBars, applyTextSize } from './textsize.js';
+import { watchTextSize, watchBars } from './textsize.js';
 
 export const VERSION = '1.20.0';
 
@@ -939,10 +939,6 @@ function renderBridge() {
   </div>`;
 }
 
-// Tamaños de letra que se eligen en la app, encima del tamaño del móvil (Ajustes del iPhone → Pantalla y brillo
-// → Tamaño del texto, que la app ya sigue sola).
-const TEXT_SCALES = [[1, 'Normal'], [1.15, 'Grande'], [1.3, 'Muy grande'], [1.5, 'Enorme']];
-
 function googleCard() {
   const s = settings();
   const key = googleKey();
@@ -961,17 +957,8 @@ function googleCard() {
 
 function renderSettings() {
   const s = settings();
-  const scale = s.textScale || 1;
   return `
-  <h2 class="section-title" style="margin-top:6px">Tamaño de la letra</h2>
-  <div class="card">
-    <div class="seg big-seg" role="group" aria-label="Tamaño de la letra">
-      ${TEXT_SCALES.map(([v, l]) => `<button data-action="text-scale" data-v="${v}" class="${scale === v ? 'on' : ''}" aria-pressed="${scale === v}" style="font-size:${v}em">${l}</button>`).join('')}
-    </div>
-    <div class="hint" style="margin:12px 0 0">${isIOS ? 'La app ya sigue el tamaño de letra del iPhone (Ajustes → Pantalla y brillo → Tamaño del texto). Esto la agranda más todavía.' : 'Esto se suma al tamaño de letra del móvil.'}</div>
-  </div>
-
-  <h2 class="section-title">Navegar con</h2>
+  <h2 class="section-title" style="margin-top:6px">Navegar con</h2>
   <div class="nav-pick" role="group" aria-label="App para navegar">
     <button class="btn ${s.nav === 'gmaps' ? 'ghost' : 'gold'} big" data-action="nav-app" data-v="waze" aria-pressed="${s.nav !== 'gmaps'}">${s.nav !== 'gmaps' ? I.check : ''}Waze</button>
     <button class="btn ${s.nav === 'gmaps' ? 'gold' : 'ghost'} big" data-action="nav-app" data-v="gmaps" aria-pressed="${s.nav === 'gmaps'}">${s.nav === 'gmaps' ? I.check : ''}Google Maps</button>
@@ -1862,12 +1849,6 @@ const actions = {
     toast(`${target.name} añadido a ${dayName(ui.date).rel.toLowerCase()}`);
   },
   close: () => requestCloseSheet(),
-  'text-scale': (el) => {
-    const v = TEXT_SCALES.find(([x]) => String(x) === el.dataset.v)?.[0] || 1;
-    store.setSettings({ textScale: v });
-    applyTextSize(v);
-    render();
-  },
   'toggle-more': () => { ui.moreOpen = !ui.moreOpen; render(); },
   'nav-app': (el) => { store.setSettings({ nav: el.dataset.v === 'gmaps' ? 'gmaps' : 'waze' }); render(); },
   'test-google': () => testGoogle(),
@@ -2315,7 +2296,8 @@ setupNativeShell();
 store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();
-watchTextSize(() => settings().textScale || 1);
+// La letra sigue sola el tamaño del iPhone: el repartidor no tiene que tocar nada.
+watchTextSize(() => 1);
 measureBars = watchBars();
 restoreWaitingPaste();
 const first = incoming();

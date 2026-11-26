@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 // Este archivo arranca con datos ya guardados (cada archivo de test va en su propio proceso).
 const mem = new Map([['ruta-escola-v1', JSON.stringify({
-  settings: { shiftStart: '08:00', orsKey: 'claveORS', tomtomKey: 'claveTomTom', textScale: 'x' },
+  settings: { shiftStart: '08:00', orsKey: 'claveORS', tomtomKey: 'claveTomTom' },
   clients: {
     paco: { name: 'Vinos Paco', address: 'C/ Major 12', lat: 41.38, lon: 2.05, windows: [[540, 690]], visits: 4, updatedAt: 1 },
     evil: { name: 'Evil', visits: '<img src=x onerror=alert(1)>', service: '"><img src=x>', windows: 'abc' },
@@ -28,5 +28,4 @@ test('las claves de openrouteservice y TomTom y sus tiempos guardados se van al 
   assert.equal(store.settings().tomtomKey, undefined);
   assert.equal(store.settings().googleKey, '');
   assert.deepEqual(store.route('2099-01-01').pairs, {});
-  assert.equal(store.settings().textScale, 1, 'un tamaño de letra raro vuelve al del móvil');
 });
